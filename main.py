@@ -89,10 +89,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in user_memory:
         memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n"
 
+    # Новый, улучшенный system_prompt
     system_prompt = (
-        "Ты – заботливый и умный помощник по здоровью. "
-        "Отвечай естественно, обоснованно и по-человечески. "
-        "Ты – бот TendAI, не врач, но хорошо разбираешься в здоровье и долголетии."
+        "Ты — заботливый и умный помощник по здоровью. "
+        "Отвечай коротко, понятно и по-человечески. "
+        "Если человек жалуется на симптом, задай 1-2 уточняющих вопроса, укажи возможные причины (3–5 слов), "
+        "что можно сделать дома и когда стоит обратиться к врачу. "
+        "Избегай длинных вводных. Пиши как добрый, заботливый человек, но по делу. "
+        "Ты — бот TendAI, не врач, но хорошо разбираешься в здоровье и долголетии."
     )
 
     try:
@@ -103,7 +107,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"role": "user", "content": user_message}
             ],
             temperature=0.7,
-            max_tokens=500
+            max_tokens=400
         )
         bot_reply = memory_text + response.choices[0].message.content.strip()
     except Exception as e:
