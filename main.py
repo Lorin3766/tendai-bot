@@ -8,7 +8,6 @@ from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     ContextTypes, filters, CallbackQueryHandler
 )
-from keep_alive import keep_alive
 from openai import OpenAI
 
 # Загрузка переменных среды
@@ -39,7 +38,6 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     feedback = query.data
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Запись в лог-файл
     with open("feedback_log.txt", "a", encoding="utf-8") as f:
         f.write(f"{timestamp} | user_id={user_id} | feedback={feedback}\n")
 
@@ -53,7 +51,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip().lower()
     message_counter[user_id] = message_counter.get(user_id, 0) + 1
 
-    # Быстрый режим
     if "#60сек" in user_message or "/fast" in user_message:
         quick = (
             "🔎 Возможные причины: стресс, инфекция, усталость\n"
@@ -63,7 +60,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(quick, reply_markup=feedback_buttons())
         return
 
-    # Уточняющие вопросы
     if "голова" in user_message:
         await update.message.reply_text(
             "Где именно болит голова? Лоб, затылок, виски?\n"
@@ -93,7 +89,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in user_memory:
         memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n"
 
-    # Запрос к OpenAI
     system_prompt = (
         "Ты – заботливый и умный помощник по здоровью. "
         "Отвечай естественно, обоснованно и по-человечески. "
@@ -126,20 +121,17 @@ def feedback_buttons():
     ]
     return InlineKeyboardMarkup(buttons)
 
-# Запуск с авто-перезапуском
+# Запуск
 if __name__ == "__main__":
-    keep_alive()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(feedback_callback))
 
     print("TendAI запущен!")
-
     while True:
         try:
             app.run_polling()
         except Exception as e:
             logging.error(f"Произошла ошибка в боте: {e}")
             time.sleep(5)
-
