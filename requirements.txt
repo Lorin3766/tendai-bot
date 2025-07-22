@@ -1,5 +1,5 @@
 python-telegram-bot==20.3
 openai>=1.0.0
 python-dotenv
+langdetect
 flask
-telegram
