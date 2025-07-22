@@ -3,6 +3,7 @@ import time
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
+from langdetect import detect
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
@@ -23,22 +24,37 @@ logging.basicConfig(level=logging.INFO)
 user_memory = {}
 message_counter = {}
 
-# Быстрые ответы по ключевым симптомам
+# Быстрые ответы по ключевым симптомам (рус + англ)
 quick_mode_symptoms = {
     "голова": """🕐 Здоровье за 60 секунд:
 💡 Возможные причины: стресс, обезвоживание, недосып  
 🩺 Что делать: выпей воды, отдохни, проветри комнату  
 🚨 Когда к врачу: если боль внезапная, сильная, с тошнотой или нарушением зрения""",
 
+    "head": """🕐 Quick Health Check:
+💡 Possible causes: stress, dehydration, fatigue  
+🩺 Try: rest, hydration, fresh air  
+🚨 See a doctor if pain is sudden, severe, or with nausea/vision issues""",
+
     "живот": """🕐 Здоровье за 60 секунд:
 💡 Возможные причины: гастрит, питание, стресс  
 🩺 Что делать: тёплая вода, покой, исключи еду на 2 часа  
 🚨 Когда к врачу: если боль резкая, с температурой, рвотой или длится >1 дня""",
 
+    "stomach": """🕐 Quick Health Check:
+💡 Possible causes: gastritis, poor diet, stress  
+🩺 Try: warm water, rest, skip food for 2 hours  
+🚨 See a doctor if pain is sharp, with fever or vomiting""",
+
     "слабость": """🕐 Здоровье за 60 секунд:
 💡 Возможные причины: усталость, вирус, анемия  
 🩺 Что делать: отдых, поешь, выпей воды  
-🚨 Когда к врачу: если слабость длится >2 дней или нарастает"""
+🚨 Когда к врачу: если слабость длится >2 дней или нарастает""",
+
+    "weakness": """🕐 Quick Health Check:
+💡 Possible causes: fatigue, virus, low iron  
+🩺 Try: rest, eat, hydrate  
+🚨 Doctor: if weakness lasts >2 days or gets worse"""
 }
 
 # Команда /start
@@ -77,6 +93,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip().lower()
     message_counter[user_id] = message_counter.get(user_id, 0) + 1
 
+    lang = detect(user_message)
+
     # Здоровье за 60 секунд
     if "#60сек" in user_message or "/fast" in user_message:
         for keyword, answer in quick_mode_symptoms.items():
@@ -84,12 +102,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(answer, reply_markup=feedback_buttons())
                 return
         await update.message.reply_text(
-            "Укажи симптом, например: «#60сек голова» или «/fast живот».", 
+            "❗ Укажи симптом, например: «#60сек голова» или «/fast stomach»", 
             reply_markup=feedback_buttons()
         )
         return
 
-    # Стандартные уточнения
+    # Стандартные уточнения (только на русском)
     if "голова" in user_message:
         await update.message.reply_text(
             "Где именно болит голова? Лоб, затылок, виски?\n"
@@ -115,20 +133,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_memory[user_id] = "кашель"
         return
 
-    # Память
     memory_text = ""
     if user_id in user_memory:
         memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n"
 
-    # Системный промпт
-    system_prompt = (
-        "Ты — заботливый и умный помощник по здоровью. "
-        "Отвечай коротко, понятно и по-человечески. "
-        "Если человек жалуется на симптом, задай 1-2 уточняющих вопроса, укажи возможные причины (3–5 слов), "
-        "что можно сделать дома и когда стоит обратиться к врачу. "
-        "Избегай длинных вводных. Пиши как добрый, заботливый человек, но по делу. "
-        "Ты — бот TendAI, не врач, но хорошо разбираешься в здоровье и долголетии."
-    )
+    # Промпт на нужном языке
+    if lang == "en":
+        system_prompt = (
+            "You are a kind and smart health assistant named TendAI. "
+            "Reply briefly, clearly, and in a caring human tone. "
+            "If the user mentions a symptom, ask 1–2 clarifying questions, suggest likely causes (3–5 words), "
+            "what can be done at home, and when to see a doctor. Be friendly but to the point."
+        )
+    else:
+        system_prompt = (
+            "Ты — заботливый и умный помощник по здоровью. "
+            "Отвечай коротко, понятно и по-человечески. "
+            "Если человек жалуется на симптом, задай 1-2 уточняющих вопроса, укажи возможные причины (3–5 слов), "
+            "что можно сделать дома и когда стоит обратиться к врачу. "
+            "Ты — бот TendAI, не врач, но хорошо разбираешься в здоровье и долголетии."
+        )
 
     try:
         response = client.chat.completions.create(
