@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 user_memory = {}
 message_counter = {}
 
-# Быстрые ответы по ключевым симптомам (рус + англ)
+# Быстрые ответы по ключевым симптомам
 quick_mode_symptoms = {
     "голова": """🕐 Здоровье за 60 секунд:
 💡 Возможные причины: стресс, обезвоживание, недосып  
@@ -102,12 +102,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(answer, reply_markup=feedback_buttons())
                 return
         await update.message.reply_text(
-            "❗ Укажи симптом, например: «#60сек голова» или «/fast stomach»", 
+            "❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».",
             reply_markup=feedback_buttons()
         )
         return
 
-    # Стандартные уточнения (только на русском)
+    # Стандартные уточнения (на русском)
     if "голова" in user_message:
         await update.message.reply_text(
             "Где именно болит голова? Лоб, затылок, виски?\n"
@@ -137,22 +137,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in user_memory:
         memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n"
 
-    # Промпт на нужном языке
-    if lang == "en":
-        system_prompt = (
-            "You are a kind and smart health assistant named TendAI. "
-            "Reply briefly, clearly, and in a caring human tone. "
-            "If the user mentions a symptom, ask 1–2 clarifying questions, suggest likely causes (3–5 words), "
-            "what can be done at home, and when to see a doctor. Be friendly but to the point."
-        )
-    else:
-        system_prompt = (
-            "Ты — заботливый и умный помощник по здоровью. "
-            "Отвечай коротко, понятно и по-человечески. "
-            "Если человек жалуется на симптом, задай 1-2 уточняющих вопроса, укажи возможные причины (3–5 слов), "
-            "что можно сделать дома и когда стоит обратиться к врачу. "
-            "Ты — бот TendAI, не врач, но хорошо разбираешься в здоровье и долголетии."
-        )
+    # Универсальный system_prompt
+    system_prompt = (
+        "You are a smart and caring health assistant named TendAI. "
+        "Always respond in the same language as the user. "
+        "Be brief, clear, and human-like. "
+        "If a user mentions a symptom, ask 1–2 clarifying questions, suggest likely causes (3–5 words), "
+        "what can be done at home, and when to see a doctor. Be warm but to the point."
+    )
 
     try:
         response = client.chat.completions.create(
