@@ -10,6 +10,7 @@ from telegram.ext import (
     ContextTypes, filters, CallbackQueryHandler
 )
 from openai import OpenAI
+import requests  # Добавлено для отправки отзывов в Google Sheets
 
 # Загрузка переменных среды
 load_dotenv()
@@ -28,32 +29,32 @@ message_counter = {}
 quick_mode_symptoms = {
     "голова": """🕐 Здоровье за 60 секунд:
 💡 Возможные причины: стресс, обезвоживание, недосып  
-🩺 Что делать: выпей воды, отдохни, проветри комнату  
+🯪 Что делать: выпей воды, отдохни, проветри комнату  
 🚨 Когда к врачу: если боль внезапная, сильная, с тошнотой или нарушением зрения""",
 
     "head": """🕐 Quick Health Check:
 💡 Possible causes: stress, dehydration, fatigue  
-🩺 Try: rest, hydration, fresh air  
+🯪 Try: rest, hydration, fresh air  
 🚨 See a doctor if pain is sudden, severe, or with nausea/vision issues""",
 
     "живот": """🕐 Здоровье за 60 секунд:
 💡 Возможные причины: гастрит, питание, стресс  
-🩺 Что делать: тёплая вода, покой, исключи еду на 2 часа  
+🯪 Что делать: тёплая вода, покой, исключи еду на 2 часа  
 🚨 Когда к врачу: если боль резкая, с температурой, рвотой или длится >1 дня""",
 
     "stomach": """🕐 Quick Health Check:
 💡 Possible causes: gastritis, poor diet, stress  
-🩺 Try: warm water, rest, skip food for 2 hours  
+🯪 Try: warm water, rest, skip food for 2 hours  
 🚨 See a doctor if pain is sharp, with fever or vomiting""",
 
     "слабость": """🕐 Здоровье за 60 секунд:
 💡 Возможные причины: усталость, вирус, анемия  
-🩺 Что делать: отдых, поешь, выпей воды  
+🯪 Что делать: отдых, поешь, выпей воды  
 🚨 Когда к врачу: если слабость длится >2 дней или нарастает""",
 
     "weakness": """🕐 Quick Health Check:
 💡 Possible causes: fatigue, virus, low iron  
-🩺 Try: rest, eat, hydrate  
+🯪 Try: rest, eat, hydrate  
 🚨 Doctor: if weakness lasts >2 days or gets worse"""
 }
 
@@ -78,12 +79,16 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     feedback = query.data
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    webhook_url = os.getenv("GOOGLE_SHEETS_WEBHOOK")
 
-    with open("feedback_log.txt", "a", encoding="utf-8") as f:
-        f.write(f"{timestamp} | user_id={user_id} | feedback={feedback}\n")
+    try:
+        requests.post(webhook_url, json={
+            "user_id": user_id,
+            "feedback": feedback
+        })
+    except Exception as e:
+        logging.error(f"Ошибка при отправке отзыва в Google Sheets: {e}")
 
-    logging.info(f"[ОТЗЫВ] {timestamp} | user_id={user_id} | feedback={feedback}")
     await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text("Спасибо за отзыв 🙏")
 
@@ -95,7 +100,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lang = detect(user_message)
 
-    # Здоровье за 60 секунд
     if "#60сек" in user_message or "/fast" in user_message:
         for keyword, answer in quick_mode_symptoms.items():
             if keyword in user_message:
@@ -107,7 +111,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Стандартные уточнения (на русском)
     if "голова" in user_message:
         await update.message.reply_text(
             "Где именно болит голова? Лоб, затылок, виски?\n"
@@ -137,7 +140,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in user_memory:
         memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n"
 
-    # Универсальный system_prompt
     system_prompt = (
         "You are a smart and caring health assistant named TendAI. "
         "Always respond in the same language as the user. "
@@ -176,3 +178,4 @@ if __name__ == "__main__":
         except Exception as e:
             logging.error(f"Произошла ошибка в боте: {e}")
             time.sleep(5)
+
