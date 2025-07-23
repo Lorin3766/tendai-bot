@@ -1,7 +1,5 @@
 import os
-import time
 import logging
-from datetime import datetime
 from dotenv import load_dotenv
 from langdetect import detect
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,22 +8,24 @@ from telegram.ext import (
     ContextTypes, filters, CallbackQueryHandler
 )
 from openai import OpenAI
-import requests  # Добавлено для отправки отзывов в Google Sheets
+import requests
 
 # Загрузка переменных среды
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_SHEETS_WEBHOOK = os.getenv("GOOGLE_SHEETS_WEBHOOK")
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Логгирование
 logging.basicConfig(level=logging.INFO)
 
-# Память и счётчик сообщений
+# Память и счётчики
 user_memory = {}
 message_counter = {}
 
-# Быстрые ответы по ключевым симптомам
+# Быстрые шаблоны
 quick_mode_symptoms = {
     "голова": """🕐 Здоровье за 60 секунд:
 💡 Возможные причины: стресс, обезвоживание, недосып  
@@ -64,53 +64,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Кнопки фидбека
 def feedback_buttons():
-    buttons = [
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
             InlineKeyboardButton("👎 Нет", callback_data="feedback_no")
         ]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
-# Обработка отзывов
+# Обработка фидбека
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
     await query.answer()
-
+    user_id = query.from_user.id
     feedback = query.data
-    webhook_url = os.getenv("GOOGLE_SHEETS_WEBHOOK")
 
     try:
-        requests.post(webhook_url, json={
-            "user_id": user_id,
-            "feedback": feedback
-        })
+        if GOOGLE_SHEETS_WEBHOOK:
+            requests.post(GOOGLE_SHEETS_WEBHOOK, json={"user_id": user_id, "feedback": feedback})
     except Exception as e:
-        logging.error(f"Ошибка при отправке отзыва в Google Sheets: {e}")
+        logging.error(f"Ошибка при отправке отзыва: {e}")
 
     await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text("Спасибо за отзыв 🙏")
 
-# Основная логика
+# Обработка сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text.strip().lower()
     message_counter[user_id] = message_counter.get(user_id, 0) + 1
-
     lang = detect(user_message)
 
+    # Быстрый режим
     if "#60сек" in user_message or "/fast" in user_message:
-        for keyword, answer in quick_mode_symptoms.items():
+        for keyword, reply in quick_mode_symptoms.items():
             if keyword in user_message:
-                await update.message.reply_text(answer, reply_markup=feedback_buttons())
+                await update.message.reply_text(reply, reply_markup=feedback_buttons())
                 return
-        await update.message.reply_text(
-            "❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».",
-            reply_markup=feedback_buttons()
-        )
+        await update.message.reply_text("❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».", reply_markup=feedback_buttons())
         return
 
+    # Уточняющие вопросы
     if "голова" in user_message:
         await update.message.reply_text(
             "Где именно болит голова? Лоб, затылок, виски?\n"
@@ -119,7 +112,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         user_memory[user_id] = "головная боль"
         return
-    elif "горло" in user_message:
+
+    if "горло" in user_message:
         await update.message.reply_text(
             "Горло болит при глотании или постоянно?\n"
             "Есть ли температура или кашель?\n"
@@ -127,7 +121,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         user_memory[user_id] = "боль в горле"
         return
-    elif "кашель" in user_message:
+
+    if "кашель" in user_message:
         await update.message.reply_text(
             "Кашель сухой или с мокротой?\n"
             "Давно ли он у вас?\n"
@@ -170,12 +165,4 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(feedback_callback))
-
-    print("TendAI запущен!")
-    while True:
-        try:
-            app.run_polling()
-        except Exception as e:
-            logging.error(f"Произошла ошибка в боте: {e}")
-            time.sleep(5)
-
+    app.run_polling()
