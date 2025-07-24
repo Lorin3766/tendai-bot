@@ -64,12 +64,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Кнопки фидбека
 def feedback_buttons():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
-            InlineKeyboardButton("👎 Нет", callback_data="feedback_no")
-        ]
-    ])
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
+        InlineKeyboardButton("👎 Нет", callback_data="feedback_no")
+    ]])
 
 # Обработка фидбека
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -80,7 +78,10 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if GOOGLE_SHEETS_WEBHOOK:
-            requests.post(GOOGLE_SHEETS_WEBHOOK, json={"user_id": user_id, "feedback": feedback})
+            requests.post(GOOGLE_SHEETS_WEBHOOK, json={
+                "user_id": user_id,
+                "feedback": feedback
+            })
     except Exception as e:
         logging.error(f"Ошибка при отправке отзыва: {e}")
 
@@ -90,21 +91,22 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработка сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_message = update.message.text.strip().lower()
+    user_message = update.message.text.strip()
+    user_lower = user_message.lower()
     message_counter[user_id] = message_counter.get(user_id, 0) + 1
     lang = detect(user_message)
 
     # Быстрый режим
-    if "#60сек" in user_message or "/fast" in user_message:
+    if "#60сек" in user_lower or "/fast" in user_lower:
         for keyword, reply in quick_mode_symptoms.items():
-            if keyword in user_message:
+            if keyword in user_lower:
                 await update.message.reply_text(reply, reply_markup=feedback_buttons())
                 return
         await update.message.reply_text("❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».", reply_markup=feedback_buttons())
         return
 
     # Уточняющие вопросы
-    if "голова" in user_message:
+    if "голова" in user_lower or "headache" in user_lower:
         await update.message.reply_text(
             "Где именно болит голова? Лоб, затылок, виски?\n"
             "Какой характер боли: тупая, острая, пульсирующая?\n"
@@ -113,7 +115,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_memory[user_id] = "головная боль"
         return
 
-    if "горло" in user_message:
+    if "горло" in user_lower or "throat" in user_lower:
         await update.message.reply_text(
             "Горло болит при глотании или постоянно?\n"
             "Есть ли температура или кашель?\n"
@@ -122,7 +124,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_memory[user_id] = "боль в горле"
         return
 
-    if "кашель" in user_message:
+    if "кашель" in user_lower or "cough" in user_lower:
         await update.message.reply_text(
             "Кашель сухой или с мокротой?\n"
             "Давно ли он у вас?\n"
@@ -131,10 +133,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_memory[user_id] = "кашель"
         return
 
+    # Память
     memory_text = ""
     if user_id in user_memory:
         memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n"
 
+    # Prompt
     system_prompt = (
         "You are a smart and caring health assistant named TendAI. "
         "Always respond in the same language as the user. "
