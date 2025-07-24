@@ -64,10 +64,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Кнопки фидбека
 def feedback_buttons():
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
-        InlineKeyboardButton("👎 Нет", callback_data="feedback_no")
-    ]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
+                                  InlineKeyboardButton("👎 Нет", callback_data="feedback_no")]])
 
 # Обработка фидбека
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
