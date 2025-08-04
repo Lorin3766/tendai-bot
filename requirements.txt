@@ -4,3 +4,5 @@ python-dotenv
 langdetect
 flask
 requests
+gspread
+oauth2client
