@@ -8,15 +8,26 @@ from telegram.ext import (
     ContextTypes, filters, CallbackQueryHandler
 )
 from openai import OpenAI
-import requests
+from datetime import datetime
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # Загрузка переменных среды
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GOOGLE_SHEETS_WEBHOOK = os.getenv("GOOGLE_SHEETS_WEBHOOK")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Подключение к Google Sheets
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+credentials = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+client_sheet = gspread.authorize(credentials)
+sheet = client_sheet.open_by_key("1tm1HUgAJbKh5SiME8hd3u7I5TE8Paglu63t3BqkdLMg").worksheet("Feedback")
+
+def add_feedback(user_id, feedback_text):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sheet.append_row([timestamp, str(user_id), feedback_text])
 
 # Логгирование
 logging.basicConfig(level=logging.INFO)
@@ -75,13 +86,9 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     feedback = query.data
 
     try:
-        if GOOGLE_SHEETS_WEBHOOK:
-            requests.post(GOOGLE_SHEETS_WEBHOOK, json={
-                "user_id": user_id,
-                "feedback": feedback
-            })
+        add_feedback(user_id, feedback)
     except Exception as e:
-        logging.error(f"Ошибка при отправке отзыва: {e}")
+        logging.error(f"Ошибка при сохранении отзыва: {e}")
 
     await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text("Спасибо за отзыв 🙏")
