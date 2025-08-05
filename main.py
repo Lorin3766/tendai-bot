@@ -25,6 +25,8 @@ scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 creds_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client_sheet = gspread.authorize(credentials)
+
+# ⚠️ Вот правильно вставленный ID
 sheet = client_sheet.open_by_key("1tm1HUgAJbKh5SiME8hd3u7I5TE8Paglu63t3BqkdLMg").worksheet("Feedback")
 
 def add_feedback(user_id, feedback_text):
@@ -103,7 +105,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_counter[user_id] = message_counter.get(user_id, 0) + 1
     lang = detect(user_message)
 
-    # Быстрый режим
     if "#60сек" in user_lower or "/fast" in user_lower:
         for keyword, reply in quick_mode_symptoms.items():
             if keyword in user_lower:
@@ -112,7 +113,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».", reply_markup=feedback_buttons())
         return
 
-    # Уточняющие вопросы
     if "голова" in user_lower or "headache" in user_lower:
         await update.message.reply_text(
             "Где именно болит голова? Лоб, затылок, виски?\n"
@@ -140,12 +140,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_memory[user_id] = "кашель"
         return
 
-    # Память
     memory_text = ""
     if user_id in user_memory:
         memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n"
 
-    # Prompt (обновлённый)
     system_prompt = (
         "Ты — заботливый и умный помощник по здоровью и долголетию по имени TendAI.\n"
         "Всегда отвечай на том языке, на котором говорит пользователь.\n"
@@ -181,4 +179,3 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(feedback_callback))
     app.run_polling()
-
