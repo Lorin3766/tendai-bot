@@ -20,13 +20,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Подключение к Google Sheets через переменную среды
+# Подключение к Google Sheets
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client_sheet = gspread.authorize(credentials)
-
-# ✅ Заменено: доступ по названию файла, а не по ID
 sheet = client_sheet.open("TendAI Feedback").worksheet("Feedback")
 
 def add_feedback(user_id, feedback_text):
@@ -42,32 +40,32 @@ message_counter = {}
 
 # Быстрые шаблоны
 quick_mode_symptoms = {
-    "голова": """🕐 Здоровье за 60 секунд:
+    "голова": """[Здоровье за 60 секунд]
 💡 Возможные причины: стресс, обезвоживание, недосып  
 🪪 Что делать: выпей воды, отдохни, проветри комнату  
 🚨 Когда к врачу: если боль внезапная, сильная, с тошнотой или нарушением зрения""",
 
-    "head": """🕐 Quick Health Check:
+    "head": """[Quick Health Check]
 💡 Possible causes: stress, dehydration, fatigue  
 🪪 Try: rest, hydration, fresh air  
 🚨 See a doctor if pain is sudden, severe, or with nausea/vision issues""",
 
-    "живот": """🕐 Здоровье за 60 секунд:
+    "живот": """[Здоровье за 60 секунд]
 💡 Возможные причины: гастрит, питание, стресс  
 🪪 Что делать: тёплая вода, покой, исключи еду на 2 часа  
 🚨 Когда к врачу: если боль резкая, с температурой, рвотой или длится >1 дня""",
 
-    "stomach": """🕐 Quick Health Check:
+    "stomach": """[Quick Health Check]
 💡 Possible causes: gastritis, poor diet, stress  
 🪪 Try: warm water, rest, skip food for 2 hours  
 🚨 See a doctor if pain is sharp, with fever or vomiting""",
 
-    "слабость": """🕐 Здоровье за 60 секунд:
+    "слабость": """[Здоровье за 60 секунд]
 💡 Возможные причины: усталость, вирус, анемия  
 🪪 Что делать: отдых, поешь, выпей воды  
 🚨 Когда к врачу: если слабость длится >2 дней или нарастает""",
 
-    "weakness": """🕐 Quick Health Check:
+    "weakness": """[Quick Health Check]
 💡 Possible causes: fatigue, virus, low iron  
 🪪 Try: rest, eat, hydrate  
 🚨 Doctor: if weakness lasts >2 days or gets worse"""
