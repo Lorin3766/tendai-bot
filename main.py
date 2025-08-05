@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from dotenv import load_dotenv
 from langdetect import detect
@@ -19,9 +20,10 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Подключение к Google Sheets
+# Подключение к Google Sheets через переменную среды
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-credentials = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+creds_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client_sheet = gspread.authorize(credentials)
 sheet = client_sheet.open_by_key("1tm1HUgAJbKh5SiME8hd3u7I5TE8Paglu63t3BqkdLMg").worksheet("Feedback")
 
@@ -168,6 +170,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_reply = memory_text + response.choices[0].message.content.strip()
     except Exception as e:
         bot_reply = f"Произошла ошибка при обращении к ИИ: {e}"
+        logging.error(bot_reply)
 
     await update.message.reply_text(bot_reply, reply_markup=feedback_buttons())
 
