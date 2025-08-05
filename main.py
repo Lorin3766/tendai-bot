@@ -26,8 +26,8 @@ creds_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client_sheet = gspread.authorize(credentials)
 
-# ⚠️ Вот правильно вставленный ID
-sheet = client_sheet.open_by_key("1tm1HUgAJbKh5SiME8hd3u7I5TE8Paglu63t3BqkdLMg").worksheet("Feedback")
+# ✅ Заменено: доступ по названию файла, а не по ID
+sheet = client_sheet.open("TendAI Feedback").worksheet("Feedback")
 
 def add_feedback(user_id, feedback_text):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
