@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 from dotenv import load_dotenv
@@ -119,7 +120,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_memory[user_id] = "головная боль"
         return
 
-    if "горло" in user_lower or "throat" in user_lower:
+    if "горло" in user_lower или "throat" in user_lower:
         await update.message.reply_text(
             "Горло болит при глотании или постоянно?\n"
             "Есть ли температура или кашель?\n"
