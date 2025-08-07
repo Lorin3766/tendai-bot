@@ -1,11 +1,8 @@
-import os
 import json
 import logging
-import time
-from typing import Optional
 from dotenv import load_dotenv
 from langdetect import detect
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     ContextTypes, filters, CallbackQueryHandler
@@ -30,26 +27,15 @@ client_sheet = gspread.authorize(credentials)
 sheet = client_sheet.open("TendAI Feedback").worksheet("Feedback")
 
 def add_feedback(user_id, feedback_text):
-    # СТАРЫЙ формат (оставляю как есть для 👍/👎)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sheet.append_row([timestamp, str(user_id), feedback_text])
 
-def add_detailed_feedback(user, rating: Optional[int|str], comment: Optional[str]):
-    # НОВЫЙ расширенный формат для звёзд и текстовых комментариев
-    # Колонки: timestamp | user_id | name | username | rating | comment
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    username = f"@{user.username}" if user.username else ""
-    sheet.append_row([timestamp, str(user.id), name, username, str(rating or ""), comment or ""])
-
 # Логгирование
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("tendai-bot")
 
 # Память и счётчики
 user_memory = {}
 message_counter = {}
-last_comment_at = {}  # анти-спам по текстовым отзывам
 
 # Быстрые шаблоны
 quick_mode_symptoms = {
@@ -88,104 +74,27 @@ quick_mode_symptoms = {
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет, я TendAI 🤗 Что тебя беспокоит и волнует? Я подскажу, что делать.")
 
-# --- СТАРЫЕ кнопки фидбека (оставляю как было) ---
+# Кнопки фидбека
 def feedback_buttons():
     return InlineKeyboardMarkup([[InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
                                   InlineKeyboardButton("👎 Нет", callback_data="feedback_no")]])
 
-# --- НОВЫЕ кнопки: звёзды + комментарий + старые 👍/👎 ---
-def combined_feedback_buttons():
-    stars = [InlineKeyboardButton(f"{i}⭐", callback_data=f"rate_{i}") for i in range(1, 5+1)]
-    row1 = stars
-    row2 = [InlineKeyboardButton("📝 Оставить комментарий", callback_data="comment")]
-    row3 = [InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
-            InlineKeyboardButton("👎 Нет", callback_data="feedback_no")]
-    return InlineKeyboardMarkup([row1, row2, row3])
-
-# Обработка СТАРОГО фидбека 👍/👎 (без изменений)
+# Обработка фидбека
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     feedback = query.data
+
     try:
         add_feedback(user_id, feedback)
     except Exception as e:
         logging.error(f"Ошибка при сохранении отзыва: {e}")
 
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-
+    await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text("Спасибо за отзыв 🙏")
 
-# --- НОВОЕ: обработка рейтинга звёздами ---
-async def handle_rate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    try:
-        rating = int(q.data.split("_")[1])
-    except Exception:
-        rating = None
-
-    context.user_data["last_rating"] = rating
-    try:
-        add_detailed_feedback(update.effective_user, rating=rating, comment="")
-    except Exception as e:
-        log.error(f"Ошибка сохранения рейтинга: {e}")
-
-    try:
-        await q.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-
-    await q.message.reply_text(f"Спасибо! Оценка сохранена: {rating}⭐")
-
-# --- НОВОЕ: запрос комментария и приём следующего сообщения как отзыва ---
-async def handle_comment_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    uid = update.effective_user.id
-    now = time.time()
-    # анти-спам (20 сек между текстовыми отзывами)
-    if uid in last_comment_at and now - last_comment_at[uid] < 20:
-        wait = int(20 - (now - last_comment_at[uid]))
-        await q.message.reply_text(f"Подождите {wait} сек. перед новым комментарием 🙏")
-        return
-
-    context.user_data["awaiting_comment"] = True
-    await q.message.reply_text(
-        "Напишите короткий отзыв (1–2 предложения).",
-        reply_markup=ForceReply(selective=True)
-    )
-
-async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # НЕ блокируем другие хэндлеры — этот просто слушает, когда ждём отзыв
-    if not context.user_data.get("awaiting_comment"):
-        return
-
-    uid = update.effective_user.id
-    text = (update.message.text or "").strip()
-    if not text:
-        await update.message.reply_text("Отзыв пустой. Напишите пару фраз, пожалуйста.")
-        return
-    if len(text) > 600:
-        await update.message.reply_text("Слишком длинно. Укоротите до ~600 символов 🙏")
-        return
-
-    rating = context.user_data.get("last_rating", "")
-    try:
-        add_detailed_feedback(update.effective_user, rating=rating, comment=text)
-    except Exception as e:
-        log.error(f"Ошибка сохранения комментария: {e}")
-
-    last_comment_at[uid] = time.time()
-    context.user_data["awaiting_comment"] = False
-    await update.message.reply_text("Спасибо за отзыв! Он сохранён 🙏")
-
-# Обработка сообщений (как было, только меняю клавиатуру на расширенную)
+# Обработка сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text.strip()
@@ -196,9 +105,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "#60сек" in user_lower or "/fast" in user_lower:
         for keyword, reply in quick_mode_symptoms.items():
             if keyword in user_lower:
-                await update.message.reply_text(reply, reply_markup=combined_feedback_buttons())
+                await update.message.reply_text(reply, reply_markup=feedback_buttons())
                 return
-        await update.message.reply_text("❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».", reply_markup=combined_feedback_buttons())
+        await update.message.reply_text("❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».", reply_markup=feedback_buttons())
         return
 
     if "голова" in user_lower or "headache" in user_lower:
@@ -258,25 +167,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_reply = f"Произошла ошибка при обращении к ИИ: {e}"
         logging.error(bot_reply)
 
-    # показываем новую комбинированную клавиатуру (звёзды + комментарий + 👍/👎)
-    await update.message.reply_text(bot_reply, reply_markup=combined_feedback_buttons())
-
-# --- Сброс вебхука перед polling (чтобы не было конфликтов) ---
-async def _post_init(app):
-    await app.bot.delete_webhook(drop_pending_updates=True)
+    await update.message.reply_text(bot_reply, reply_markup=feedback_buttons())
 
 # Запуск
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-
-    # Порядок callbacks: новые + старые
-    app.add_handler(CallbackQueryHandler(handle_rate_cb, pattern=r"^rate_[1-5]$"))
-    app.add_handler(CallbackQueryHandler(handle_comment_cb, pattern=r"^comment$"))
-    app.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^feedback_(yes|no)$"))  # старые 👍/👎
-
-    # Приём текстового комментария — НЕ блокирует основной обработчик
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment, block=False))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    app.run_polling(drop_pending_updates=True)
+    app.add_handler(CallbackQueryHandler(feedback_callback))
+    app.run_polling()
