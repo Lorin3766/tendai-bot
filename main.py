@@ -1,9 +1,12 @@
 import os
 import json
+import time
 import logging
+from typing import Optional
+
 from dotenv import load_dotenv
 from langdetect import detect
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     ContextTypes, filters, CallbackQueryHandler
@@ -13,32 +16,81 @@ from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# =========================
+# Настройки / Константы
+# =========================
+MAX_COMMENT_LEN = 600           # максимум символов в текстовом отзыве
+COMMENT_COOLDOWN_SEC = 20       # не чаще одного текстового отзыва от пользователя
+SHEET_NAME = "TendAI Feedback"
+WORKSHEET_NAME = "Feedback"
+
+# =========================
 # Загрузка переменных среды
+# =========================
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN не задан в .env")
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY не задан в .env")
+if not GOOGLE_CREDENTIALS_JSON:
+    raise RuntimeError("GOOGLE_CREDENTIALS_JSON не задан в .env")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# =========================
 # Подключение к Google Sheets
+# Ожидаемые колонки в листе Feedback (строка 1):
+# timestamp | user_id | name | username | rating | comment
+# =========================
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client_sheet = gspread.authorize(credentials)
-sheet = client_sheet.open("TendAI Feedback").worksheet("Feedback")
+sheet = client_sheet.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
 
-def add_feedback(user_id, feedback_text):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    sheet.append_row([timestamp, str(user_id), feedback_text])
+def append_row_safe(values: list, retries: int = 2) -> None:
+    """
+    Безопасная запись строки в Google Sheets с короткими повторами при временных сбоях.
+    """
+    for i in range(retries + 1):
+        try:
+            sheet.append_row(values)
+            return
+        except Exception as e:
+            logging.error(f"append_row попытка {i+1} ошибка: {e}")
+            if i < retries:
+                time.sleep(0.8)
+            else:
+                # не падаем — бот продолжает работу
+                logging.error("Не удалось записать строку в Google Sheets после повторов.")
 
-# Логгирование
+def save_feedback_to_sheet(user, rating: Optional[str|int], comment: Optional[str]) -> None:
+    """Сохраняет строку отзыва в Google Sheets."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    uid = user.id
+    name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    uname = f"@{user.username}" if user.username else ""
+    append_row_safe([ts, str(uid), name, uname, str(rating or ""), comment or ""])
+
+# ==============
+# Логирование
+# ==============
 logging.basicConfig(level=logging.INFO)
 
+# ==================
 # Память и счётчики
-user_memory = {}
-message_counter = {}
+# ==================
+user_memory: dict[int, str] = {}
+message_counter: dict[int, int] = {}
+last_comment_at: dict[int, float] = {}  # анти-спам по текстовым отзывам
 
-# Быстрые шаблоны
+# =======================
+# Быстрые шаблоны (60 сек)
+# =======================
 quick_mode_symptoms = {
     "голова": """[Здоровье за 60 секунд]
 💡 Возможные причины: стресс, обезвоживание, недосып  
@@ -71,46 +123,146 @@ quick_mode_symptoms = {
 🚨 Doctor: if weakness lasts >2 days or gets worse"""
 }
 
+# =======================
+# Кнопки фидбека (звёзды)
+# =======================
+def rating_keyboard() -> InlineKeyboardMarkup:
+    stars = [InlineKeyboardButton(f"{i}⭐", callback_data=f"rate_{i}") for i in range(1, 6)]
+    row1 = stars
+    row2 = [InlineKeyboardButton("📝 Оставить комментарий", callback_data="comment")]
+    return InlineKeyboardMarkup([row1, row2])
+
+# ============
 # Команда /start
+# ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет, я TendAI 🤗 Что тебя беспокоит и волнует? Я подскажу, что делать.")
+    await update.message.reply_text(
+        "Привет, я TendAI 🤗 Что тебя беспокоит и волнует? Я подскажу, что делать."
+    )
 
-# Кнопки фидбека
-def feedback_buttons():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
-                                  InlineKeyboardButton("👎 Нет", callback_data="feedback_no")]])
-
-# Обработка фидбека
-async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    feedback = query.data
-
+# ===========================
+# Обработка callback: ЗВЁЗДЫ
+# ===========================
+async def handle_rate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
     try:
-        add_feedback(user_id, feedback)
+        rating = int(q.data.split("_")[1])
+    except Exception:
+        rating = None
+
+    context.user_data["last_rating"] = rating
+    try:
+        save_feedback_to_sheet(user=update.effective_user, rating=rating, comment="")
     except Exception as e:
-        logging.error(f"Ошибка при сохранении отзыва: {e}")
+        logging.error(f"Ошибка сохранения рейтинга: {e}")
 
-    await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text("Спасибо за отзыв 🙏")
+    # Снять клавиатуру под исходным сообщением (если возможно)
+    try:
+        await q.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
-# Обработка сообщений
+    await q.message.reply_text(f"Спасибо! Оценка сохранена: {rating}⭐")
+
+# ======================================
+# Обработка callback: "Оставить комментарий"
+# ======================================
+async def handle_comment_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = update.effective_user.id
+
+    # Анти-спам по текстовым отзывам
+    now = time.time()
+    if uid in last_comment_at and now - last_comment_at[uid] < COMMENT_COOLDOWN_SEC:
+        wait = int(COMMENT_COOLDOWN_SEC - (now - last_comment_at[uid]))
+        await q.message.reply_text(f"Подождите {wait} сек. перед новым комментарием 🙏")
+        return
+
+    context.user_data["awaiting_comment"] = True
+    await q.message.reply_text(
+        "Напишите короткий отзыв (1–2 предложения).",
+        reply_markup=ForceReply(selective=True)
+    )
+
+# =========================================
+# Приём ТЕКСТОВОГО комментария от пользователя
+# =========================================
+async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_comment"):
+        return  # это обычное сообщение, не отзыв
+
+    uid = update.effective_user.id
+    now = time.time()
+    if uid in last_comment_at and now - last_comment_at[uid] < COMMENT_COOLDOWN_SEC:
+        wait = int(COMMENT_COOLDOWN_SEC - (now - last_comment_at[uid]))
+        await update.message.reply_text(f"Подождите {wait} сек. перед новым комментарием 🙏")
+        context.user_data["awaiting_comment"] = False
+        return
+
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text("Отзыв пустой. Напишите пару фраз, пожалуйста.")
+        return
+    if len(text) > MAX_COMMENT_LEN:
+        await update.message.reply_text(f"Слишком длинно. Укоротите до ~{MAX_COMMENT_LEN} символов 🙏")
+        return
+
+    rating = context.user_data.get("last_rating", "")
+    try:
+        save_feedback_to_sheet(user=update.effective_user, rating=rating, comment=text)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения комментария: {e}")
+
+    last_comment_at[uid] = now
+    context.user_data["awaiting_comment"] = False
+    await update.message.reply_text("Спасибо за отзыв! Он сохранён 🙏")
+
+# =====================================================
+# (Необязательно) Обработка старых кнопок 👍/👎 для легаси
+# =====================================================
+async def legacy_thumb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    value = "yes" if q.data.endswith("yes") else "no"
+    try:
+        save_feedback_to_sheet(user=update.effective_user, rating=value, comment="")
+    except Exception as e:
+        logging.error(f"Ошибка сохранения legacy-отзыва: {e}")
+    try:
+        await q.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await q.message.reply_text("Спасибо за отзыв 🙏")
+
+# ===================
+# Основная логика ответа
+# ===================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text.strip()
     user_lower = user_message.lower()
     message_counter[user_id] = message_counter.get(user_id, 0) + 1
-    lang = detect(user_message)
 
+    try:
+        lang = detect(user_message)
+    except Exception:
+        lang = "unknown"
+
+    # Быстрый режим
     if "#60сек" in user_lower or "/fast" in user_lower:
         for keyword, reply in quick_mode_symptoms.items():
             if keyword in user_lower:
-                await update.message.reply_text(reply, reply_markup=feedback_buttons())
+                await update.message.reply_text(reply, reply_markup=rating_keyboard())
                 return
-        await update.message.reply_text("❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».", reply_markup=feedback_buttons())
+        await update.message.reply_text(
+            "❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».",
+            reply_markup=rating_keyboard()
+        )
         return
 
+    # Примеры уточняющих вопросов по ключевым словам
     if "голова" in user_lower or "headache" in user_lower:
         await update.message.reply_text(
             "Где именно болит голова? Лоб, затылок, виски?\n"
@@ -168,12 +320,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_reply = f"Произошла ошибка при обращении к ИИ: {e}"
         logging.error(bot_reply)
 
-    await update.message.reply_text(bot_reply, reply_markup=feedback_buttons())
+    await update.message.reply_text(bot_reply, reply_markup=rating_keyboard())
 
+# =====
 # Запуск
+# =====
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Команды
     app.add_handler(CommandHandler("start", start))
+
+    # Callback-и
+    app.add_handler(CallbackQueryHandler(handle_rate_cb, pattern=r"^rate_[1-5]$"))
+    app.add_handler(CallbackQueryHandler(handle_comment_cb, pattern=r"^comment$"))
+    app.add_handler(CallbackQueryHandler(legacy_thumb_cb, pattern=r"^feedback_(yes|no)$"))
+
+    # Текст: сначала ловим возможный комментарий, затем — общая логика ответа
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(feedback_callback))
+
     app.run_polling()
