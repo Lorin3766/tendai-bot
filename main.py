@@ -53,9 +53,7 @@ client_sheet = gspread.authorize(credentials)
 sheet = client_sheet.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
 
 def append_row_safe(values: list, retries: int = 2) -> None:
-    """
-    Безопасная запись строки в Google Sheets с короткими повторами при временных сбоях.
-    """
+    """Безопасная запись строки в Google Sheets с короткими повторами при временных сбоях."""
     for i in range(retries + 1):
         try:
             sheet.append_row(values)
@@ -65,7 +63,6 @@ def append_row_safe(values: list, retries: int = 2) -> None:
             if i < retries:
                 time.sleep(0.8)
             else:
-                # не падаем — бот продолжает работу
                 logging.error("Не удалось записать строку в Google Sheets после повторов.")
 
 def save_feedback_to_sheet(user, rating: Optional[str|int], comment: Optional[str]) -> None:
@@ -157,7 +154,6 @@ async def handle_rate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Ошибка сохранения рейтинга: {e}")
 
-    # Снять клавиатуру под исходным сообщением (если возможно)
     try:
         await q.edit_message_reply_markup(reply_markup=None)
     except Exception:
@@ -173,7 +169,6 @@ async def handle_comment_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     uid = update.effective_user.id
 
-    # Анти-спам по текстовым отзывам
     now = time.time()
     if uid in last_comment_at and now - last_comment_at[uid] < COMMENT_COOLDOWN_SEC:
         wait = int(COMMENT_COOLDOWN_SEC - (now - last_comment_at[uid]))
@@ -262,7 +257,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Примеры уточняющих вопросов по ключевым словам
+    # Уточняющие вопросы
     if "голова" in user_lower or "headache" in user_lower:
         await update.message.reply_text(
             "Где именно болит голова? Лоб, затылок, виски?\n"
@@ -325,8 +320,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =====
 # Запуск
 # =====
+async def _post_init(app):
+    # Сброс вебхука перед polling и очистка старой очереди
+    await app.bot.delete_webhook(drop_pending_updates=True)
+
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
 
     # Команды
     app.add_handler(CommandHandler("start", start))
@@ -336,8 +335,8 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handle_comment_cb, pattern=r"^comment$"))
     app.add_handler(CallbackQueryHandler(legacy_thumb_cb, pattern=r"^feedback_(yes|no)$"))
 
-    # Текст: сначала ловим возможный комментарий, затем — общая логика ответа
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment))
+    # Текст: делаем обработчик комментариев НЕблокирующим
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment, block=False))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
