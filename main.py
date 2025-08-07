@@ -5,7 +5,6 @@ import time
 from typing import Optional
 
 from dotenv import load_dotenv
-from langdetect import detect, LangDetectException
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
@@ -46,7 +45,7 @@ def add_detailed_feedback(user, rating: Optional[int|str], comment: Optional[str
 logging.basicConfig(level=logging.INFO)
 user_memory = {}
 message_counter = {}
-last_comment_at = {}  # анти-спам на текстовые отзывы
+last_comment_at = {}  # анти-спам на текстовые отзывы (сек)
 
 # ── Быстрые шаблоны ───────────────────────────────────────────────────────
 quick_mode_symptoms = {
@@ -54,22 +53,27 @@ quick_mode_symptoms = {
 💡 Возможные причины: стресс, обезвоживание, недосып  
 🪪 Что делать: выпей воды, отдохни, проветри комнату  
 🚨 Когда к врачу: если боль внезапная, сильная, с тошнотой или нарушением зрения""",
+
     "head": """[Quick Health Check]
 💡 Possible causes: stress, dehydration, fatigue  
 🪪 Try: rest, hydration, fresh air  
 🚨 See a doctor if pain is sudden, severe, or with nausea/vision issues""",
+
     "живот": """[Здоровье за 60 секунд]
 💡 Возможные причины: гастрит, питание, стресс  
 🪪 Что делать: тёплая вода, покой, исключи еду на 2 часа  
 🚨 Когда к врачу: если боль резкая, с температурой, рвотой или длится >1 дня""",
+
     "stomach": """[Quick Health Check]
 💡 Possible causes: gastritis, poor diet, stress  
 🪪 Try: warm water, rest, skip food for 2 hours  
 🚨 See a doctor if pain is sharp, with fever or vomiting""",
+
     "слабость": """[Здоровье за 60 секунд]
 💡 Возможные причины: усталость, вирус, анемия  
 🪪 Что делать: отдых, поешь, выпей воды  
 🚨 Когда к врачу: если слабость длится >2 дней или нарастает""",
+
     "weakness": """[Quick Health Check]
 💡 Possible causes: fatigue, virus, low iron  
 🪪 Try: rest, eat, hydrate  
@@ -138,7 +142,7 @@ async def handle_comment_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ForceReply(selective=True)
     )
 
-# ── Приём комментария (только в ответ на ForceReply) ──────────────────────
+# ── Приём комментария ─────────────────────────────────────────────────────
 async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_comment"):
         return
@@ -165,11 +169,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip()
     user_lower = user_message.lower()
     message_counter[user_id] = message_counter.get(user_id, 0) + 1
-
-    try:
-        lang = detect(user_message)
-    except LangDetectException:
-        lang = "unknown"
 
     if "#60сек" in user_lower or "/fast" in user_lower:
         for keyword, reply in quick_mode_symptoms.items():
@@ -225,37 +224,3 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = client.chat.completions.create(
             model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.7,
-            max_tokens=400
-        )
-        bot_reply = memory_text + response.choices[0].message.content.strip()
-    except Exception as e:
-        bot_reply = f"Произошла ошибка при обращении к ИИ: {e}"
-        logging.error(bot_reply)
-
-    await update.message.reply_text(bot_reply, reply_markup=combined_feedback_buttons())
-
-# ── Сброс вебхука перед polling (чтобы не было конфликтов) ────────────────
-async def _post_init(app):
-    await app.bot.delete_webhook(drop_pending_updates=True)
-
-# ── Запуск ────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
-
-    app.add_handler(CommandHandler("start", start))
-
-    # callbacks: новые + старые
-    app.add_handler(CallbackQueryHandler(handle_rate_cb, pattern=r"^rate_[1-5]$"))
-    app.add_handler(CallbackQueryHandler(handle_comment_cb, pattern=r"^comment$"))
-    app.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^feedback_(yes|no)$"))  # 👍/👎
-
-    # Приём комментария — только на ответ (ForceReply), не мешает обычным сообщениям
-    app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, receive_comment))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    app.run_polling(drop_pending_updates=True)
