@@ -8,7 +8,7 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 
-# опционально: OpenAI и Sheets подключаем мягко
+# Опционально: OpenAI и Google Sheets подключаем мягко
 try:
     from openai import OpenAI
 except Exception:
@@ -21,7 +21,7 @@ except Exception:
     gspread = None
     ServiceAccountCredentials = None
 
-# ---------- Базовая настройка ----------
+# ---------- Настройка ----------
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -32,7 +32,7 @@ if not TOKEN:
 
 client = OpenAI(api_key=OPENAI_API_KEY) if (OPENAI_API_KEY and OpenAI) else None
 
-# ---------- Google Sheets: безопасная инициализация ----------
+# ---------- Google Sheets ----------
 sheet = None
 if gspread and ServiceAccountCredentials:
     creds_env = os.getenv("GOOGLE_CREDENTIALS_JSON")
@@ -49,17 +49,21 @@ if gspread and ServiceAccountCredentials:
     else:
         logging.info("GOOGLE_CREDENTIALS_JSON не задан — отзывы писать не будем")
 
-def add_feedback(user_id, feedback_text):
+def add_feedback_row(user, name, rating, comment):
+    """Пишем полную строку отзыва. Ожидаемые заголовки: timestamp, user_id, name, username, rating, comment"""
     if not sheet:
         return
     try:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sheet.append_row([ts, str(user_id), feedback_text])
+        username = (user.username or "")
+        sheet.append_row([ts, str(user.id), name, username, rating, comment or ""])
     except Exception:
         logging.exception("Не удалось записать отзыв в Sheets")
 
-# ---------- Память и быстрые шаблоны ----------
+# ---------- Память/шаблоны ----------
 user_memory = {}
+pending_feedback = {}  # user_id -> {"name": "feedback_yes|feedback_no", "rating": 1|0}
+
 quick_mode_symptoms = {
     "голова": """[Здоровье за 60 секунд]
 💡 Возможные причины: стресс, обезвоживание, недосып
@@ -95,23 +99,49 @@ def feedback_buttons():
 async def on_startup(app):
     me = await app.bot.get_me()
     logging.info(f"Running as @{me.username}")
-    # на всякий случай очищаем вебхук и очередь
     await app.bot.delete_webhook(drop_pending_updates=True)
     logging.info("Webhook cleared")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет, я TendAI 🤗 Что тебя беспокоит? Подскажу, что делать.")
+    await update.message.reply_text(
+        "Привет! Как я могу помочь тебе сегодня? Есть какие-то вопросы о здоровье?",
+        reply_markup=feedback_buttons()
+    )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("pong")
 
+async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid in pending_feedback:
+        data = pending_feedback.pop(uid)
+        add_feedback_row(update.effective_user, data["name"], data["rating"], "")
+        await update.message.reply_text("Окей, без комментария. Спасибо! 🙏")
+    else:
+        await update.message.reply_text("Сейчас нечего пропускать 🙂")
+
+# ---------- Обработка фидбека ----------
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         q = update.callback_query
         await q.answer()
-        add_feedback(q.from_user.id, q.data)
-        await q.edit_message_reply_markup(reply_markup=None)
-        await q.message.reply_text("Спасибо за отзыв 🙏")
+        user = q.from_user
+        choice = q.data  # "feedback_yes" | "feedback_no"
+        rating = 1 if choice == "feedback_yes" else 0
+
+        # Запросим необязательный комментарий и запомним выбор
+        pending_feedback[user.id] = {"name": choice, "rating": rating}
+
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        await q.message.reply_text(
+            "Спасибо за оценку 🙏\n"
+            "Хочешь добавить комментарий? Просто напиши сообщение в ответ.\n"
+            "Или отправь /skip, чтобы пропустить."
+        )
     except Exception:
         logging.exception("feedback_callback error")
 
@@ -122,6 +152,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (update.message.text or "").strip()
         low = text.lower()
         logging.info(f"Message from {user_id}: {text!r}")
+
+        # Если ждём комментарий к отзыву и пришёл не-команда текст — сохраняем
+        if user_id in pending_feedback and not text.startswith("/"):
+            data = pending_feedback.pop(user_id)
+            add_feedback_row(update.effective_user, data["name"], data["rating"], text)
+            await update.message.reply_text("Комментарий сохранён, спасибо! 🙌")
+            return
 
         # Быстрый режим
         if "#60сек" in low or "/fast" in low:
@@ -195,6 +232,7 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ping", ping))
+    app.add_handler(CommandHandler("skip", skip_comment))
     app.add_handler(CallbackQueryHandler(feedback_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling(drop_pending_updates=True)
