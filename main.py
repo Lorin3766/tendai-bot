@@ -1,226 +1,121 @@
 import os
-import json
 import logging
-import time
-from typing import Optional
-
-from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
-from telegram.ext import (
-    ApplicationBuilder, MessageHandler, CommandHandler,
-    ContextTypes, filters, CallbackQueryHandler
-)
-from openai import OpenAI
-from datetime import datetime
+import json
+import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+)
+from openai import OpenAI
+from langdetect import detect
 
-# ── ENV ───────────────────────────────────────────────────────────────────
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# Логирование
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# === Google Sheets настройка ===
+SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+CREDS_FILE = "credentials.json"
+SHEET_NAME = "TendAI Feedback"
+WORKSHEET_NAME = "Feedback"
 
-# ── Google Sheets ─────────────────────────────────────────────────────────
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
-credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client_sheet = gspread.authorize(credentials)
-sheet = client_sheet.open("TendAI Feedback").worksheet("Feedback")
+try:
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+    client_sheet = gspread.authorize(creds)
+    sheet = client_sheet.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
+    logging.info("✅ Подключение к Google Sheets успешно")
+except Exception as e:
+    logging.error(f"❌ Ошибка подключения к Google Sheets: {e}")
+    sheet = None
 
-# СТАРОЕ (для 👍/👎) — как было
-def add_feedback(user_id, feedback_text):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    sheet.append_row([timestamp, str(user_id), feedback_text])
+# === OpenAI клиент ===
+client_ai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# НОВОЕ (звёзды/комментарий): timestamp | user_id | name | username | rating | comment
-def add_detailed_feedback(user, rating: Optional[int|str], comment: Optional[str]):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    username = f"@{user.username}" if user.username else ""
-    sheet.append_row([timestamp, str(user.id), name, username, str(rating or ""), comment or ""])
+# Память сообщений
+user_sessions = {}
 
-# ── Логи/память ───────────────────────────────────────────────────────────
-logging.basicConfig(level=logging.INFO)
-user_memory = {}
-message_counter = {}
-last_comment_at = {}  # анти-спам на текстовые отзывы (сек)
-
-# ── Быстрые шаблоны ───────────────────────────────────────────────────────
-quick_mode_symptoms = {
-    "голова": """[Здоровье за 60 секунд]
-💡 Возможные причины: стресс, обезвоживание, недосып  
-🪪 Что делать: выпей воды, отдохни, проветри комнату  
-🚨 Когда к врачу: если боль внезапная, сильная, с тошнотой или нарушением зрения""",
-
-    "head": """[Quick Health Check]
-💡 Possible causes: stress, dehydration, fatigue  
-🪪 Try: rest, hydration, fresh air  
-🚨 See a doctor if pain is sudden, severe, or with nausea/vision issues""",
-
-    "живот": """[Здоровье за 60 секунд]
-💡 Возможные причины: гастрит, питание, стресс  
-🪪 Что делать: тёплая вода, покой, исключи еду на 2 часа  
-🚨 Когда к врачу: если боль резкая, с температурой, рвотой или длится >1 дня""",
-
-    "stomach": """[Quick Health Check]
-💡 Possible causes: gastritis, poor diet, stress  
-🪪 Try: warm water, rest, skip food for 2 hours  
-🚨 See a doctor if pain is sharp, with fever or vomiting""",
-
-    "слабость": """[Здоровье за 60 секунд]
-💡 Возможные причины: усталость, вирус, анемия  
-🪪 Что делать: отдых, поешь, выпей воды  
-🚨 Когда к врачу: если слабость длится >2 дней или нарастает""",
-
-    "weakness": """[Quick Health Check]
-💡 Possible causes: fatigue, virus, low iron  
-🪪 Try: rest, eat, hydrate  
-🚨 Doctor: if weakness lasts >2 days or gets worse"""
-}
-
-# ── Команда /start ────────────────────────────────────────────────────────
+# === Команды ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет, я TendAI 🤗 Что тебя беспокоит и волнует? Я подскажу, что делать.")
-
-# ── Кнопки (звёзды + комментарий + твои 👍/👎) ────────────────────────────
-def combined_feedback_buttons():
-    stars = [InlineKeyboardButton(f"{i}⭐", callback_data=f"rate_{i}") for i in range(1, 6)]
-    row1 = stars
-    row2 = [InlineKeyboardButton("📝 Оставить комментарий", callback_data="comment")]
-    row3 = [InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
-            InlineKeyboardButton("👎 Нет", callback_data="feedback_no")]
-    return InlineKeyboardMarkup([row1, row2, row3])
-
-# ── СТАРЫЕ 👍/👎 — как было ───────────────────────────────────────────────
-async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    try:
-        add_feedback(q.from_user.id, q.data)
-    except Exception as e:
-        logging.error(f"Ошибка при сохранении отзыва: {e}")
-    try:
-        await q.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    await q.message.reply_text("Спасибо за отзыв 🙏")
-
-# ── Звёзды 1–5 ────────────────────────────────────────────────────────────
-async def handle_rate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    try:
-        rating = int(q.data.split("_")[1])
-    except Exception:
-        rating = None
-    context.user_data["last_rating"] = rating
-    try:
-        add_detailed_feedback(update.effective_user, rating=rating, comment="")
-    except Exception as e:
-        logging.error(f"Ошибка сохранения рейтинга: {e}")
-    try:
-        await q.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    await q.message.reply_text(f"Спасибо! Оценка сохранена: {rating}⭐")
-
-# ── Запрос текстового комментария ─────────────────────────────────────────
-async def handle_comment_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = update.effective_user.id
-    now = time.time()
-    if uid in last_comment_at and now - last_comment_at[uid] < 20:
-        wait = int(20 - (now - last_comment_at[uid]))
-        await q.message.reply_text(f"Подождите {wait} сек. перед новым комментарием 🙏")
-        return
-    context.user_data["awaiting_comment"] = True
-    await q.message.reply_text(
-        "Напишите короткий отзыв (1–2 предложения).",
-        reply_markup=ForceReply(selective=True)
+    await update.message.reply_text(
+        "Привет, я TendAI. Что тебя беспокоит и волнует? Я подскажу, что делать."
     )
 
-# ── Приём комментария ─────────────────────────────────────────────────────
-async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("awaiting_comment"):
-        return
-    uid = update.effective_user.id
-    text = (update.message.text or "").strip()
-    if not text:
-        await update.message.reply_text("Отзыв пустой. Напишите пару фраз, пожалуйста.")
-        return
-    if len(text) > 600:
-        await update.message.reply_text("Слишком длинно. Укоротите до ~600 символов 🙏")
-        return
-    rating = context.user_data.get("last_rating", "")
-    try:
-        add_detailed_feedback(update.effective_user, rating=rating, comment=text)
-    except Exception as e:
-        logging.error(f"Ошибка сохранения комментария: {e}")
-    last_comment_at[uid] = time.time()
-    context.user_data["awaiting_comment"] = False
-    await update.message.reply_text("Спасибо за отзыв! Он сохранён 🙏")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Напиши свой симптом или вопрос, а я подскажу, что делать.")
 
-# ── Основная логика сообщений (твоя) ──────────────────────────────────────
+# === Основная логика ответа ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_message = update.message.text.strip()
-    user_lower = user_message.lower()
-    message_counter[user_id] = message_counter.get(user_id, 0) + 1
+    user_id = update.message.from_user.id
+    user_text = update.message.text.strip()
 
-    if "#60сек" in user_lower or "/fast" in user_lower:
-        for keyword, reply in quick_mode_symptoms.items():
-            if keyword in user_lower:
-                await update.message.reply_text(reply, reply_markup=combined_feedback_buttons())
-                return
-        await update.message.reply_text("❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».",
-                                        reply_markup=combined_feedback_buttons())
-        return
-
-    if "голова" in user_lower or "headache" in user_lower:
-        await update.message.reply_text(
-            "Где именно болит голова? Лоб, затылок, виски?\n"
-            "Какой характер боли: тупая, острая, пульсирующая?\n"
-            "Есть ли ещё симптомы — тошнота, светобоязнь?"
-        )
-        user_memory[user_id] = "головная боль"
-        return
-
-    if "горло" in user_lower or "throat" in user_lower:
-        await update.message.reply_text(
-            "Горло болит при глотании или постоянно?\n"
-            "Есть ли температура или кашель?\n"
-            "Когда началось?"
-        )
-        user_memory[user_id] = "боль в горле"
-        return
-
-    if "кашель" in user_lower or "cough" in user_lower:
-        await update.message.reply_text(
-            "Кашель сухой или с мокротой?\n"
-            "Давно ли он у вас?\n"
-            "Есть ли температура, боль в груди или одышка?"
-        )
-        user_memory[user_id] = "кашель"
-        return
-
-    memory_text = ""
-    if user_id in user_memory:
-        memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n"
-
-    system_prompt = (
-        "Ты — заботливый и умный помощник по здоровью и долголетию по имени TendAI.\n"
-        "Всегда отвечай на том языке, на котором говорит пользователь.\n"
-        "Будь тёплым, но отвечай по сути, без повторов.\n"
-        "Если упоминается симптом — задай 1–2 уточняющих вопроса, назови 2–3 возможные причины,\n"
-        "предложи, что можно сделать дома, и в каких случаях идти к врачу.\n"
-        "Если боли нет — не нагнетай, просто объясни спокойно.\n"
-        "Если пользователь благодарит — ответь коротко и по-человечески.\n"
-        "Говори ясно, коротко и с заботой."
-    )
-
+    # Определение языка
     try:
-        response = client.chat.completions.create(
-            model="gpt-4",
+        lang = detect(user_text)
+    except:
+        lang = "unknown"
+
+    # Запоминаем историю
+    if user_id not in user_sessions:
+        user_sessions[user_id] = []
+    user_sessions[user_id].append({"role": "user", "content": user_text})
+
+    # Проверка на режим "Здоровье за 60 секунд"
+    if "#60сек" in user_text.lower():
+        system_prompt = (
+            "Отвечай очень кратко (3 пункта): возможные причины, что делать сейчас, и когда обратиться к врачу."
+        )
+    else:
+        system_prompt = (
+            "Ты — заботливый AI-помощник по здоровью и долголетию. "
+            "Задавай уточняющие вопросы, если симптом не ясен. "
+            "Отвечай коротко, по делу, и по-дружески."
+        )
+
+    # Запрос в OpenAI
+    try:
+        completion = client_ai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                *user_sessions[user_id]
+            ],
+            temperature=0.7
+        )
+        bot_reply = completion.choices[0].message["content"]
+    except Exception as e:
+        logging.error(f"Ошибка OpenAI: {e}")
+        bot_reply = "Извини, у меня сейчас техническая проблема."
+
+    # Отправка ответа
+    await update.message.reply_text(bot_reply)
+
+    # Сохраняем отзыв в Google Sheets
+    if sheet:
+        try:
+            sheet.append_row([
+                str(datetime.datetime.now()),
+                str(user_id),
+                user_text,
+                bot_reply,
+                lang
+            ])
+        except Exception as e:
+            logging.error(f"Ошибка записи в Google Sheets: {e}")
+
+# === Запуск бота ===
+def main():
+    app = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    logging.info("🤖 TendAI запущен...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
