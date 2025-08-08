@@ -1,6 +1,4 @@
-import os
-import json
-import logging
+import os, json, logging
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -16,47 +14,39 @@ from oauth2client.service_account import ServiceAccountCredentials
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+logging.basicConfig(format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", level=logging.INFO)
 
 if not TELEGRAM_TOKEN:
-    raise RuntimeError("TELEGRAM_TOKEN отсутствует в переменных окружения")
+    raise RuntimeError("TELEGRAM_TOKEN отсутствует")
 if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY отсутствует в переменных окружения")
+    logging.warning("OPENAI_API_KEY не задан — ответы ИИ работать не будут")
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO
-)
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-# ---------- Google Sheets ----------
+# ---------- Google Sheets: безопасная инициализация ----------
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+sheet = None
 creds_env = os.getenv("GOOGLE_CREDENTIALS_JSON")
-if not creds_env:
-    logging.warning("GOOGLE_CREDENTIALS_JSON не задан — кнопки-отзывы будут работать без записи в таблицу")
-    sheet = None
-else:
+if creds_env:
     try:
         creds_dict = json.loads(creds_env)
         credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client_sheet = gspread.authorize(credentials)
-        sheet = client_sheet.open("TendAI Feedback").worksheet("Feedback")
+        gclient = gspread.authorize(credentials)
+        sheet = gclient.open("TendAI Feedback").worksheet("Feedback")
         logging.info("Google Sheets подключены")
     except Exception as e:
-        logging.exception(f"Не удалось подключиться к Google Sheets: {e}")
-        sheet = None
+        logging.exception(f"Sheets error: {e}")
+else:
+    logging.info("GOOGLE_CREDENTIALS_JSON не задан — отзывы писать не будем")
 
 def add_feedback(user_id, feedback_text):
     if not sheet:
         return
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    sheet.append_row([timestamp, str(user_id), feedback_text])
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sheet.append_row([ts, str(user_id), feedback_text])
 
-# ---------- Память ----------
+# ---------- Память/шаблоны ----------
 user_memory = {}
-message_counter = {}
-
-# ---------- Быстрые шаблоны ----------
 quick_mode_symptoms = {
     "голова": """[Здоровье за 60 секунд]
 💡 Возможные причины: стресс, обезвоживание, недосып
@@ -91,30 +81,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("pong")
 
-# ---------- Кнопки фидбека ----------
 def feedback_buttons():
     return InlineKeyboardMarkup([[InlineKeyboardButton("👍 Да", callback_data="feedback_yes"),
                                   InlineKeyboardButton("👎 Нет", callback_data="feedback_no")]])
 
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    feedback = query.data
     try:
-        add_feedback(user_id, feedback)
+        q = update.callback_query
+        await q.answer()
+        add_feedback(q.from_user.id, q.data)
+        await q.edit_message_reply_markup(reply_markup=None)
+        await q.message.reply_text("Спасибо за отзыв 🙏")
     except Exception:
-        logging.exception("Ошибка при сохранении отзыва")
-    await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text("Спасибо за отзыв 🙏")
+        logging.exception("feedback_callback error")
 
-# ---------- Основной обработчик ----------
+# ---------- Основной хэндлер ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         user_message = (update.message.text or "").strip()
         user_lower = user_message.lower()
-        message_counter[user_id] = message_counter.get(user_id, 0) + 1
         logging.info(f"Message from {user_id}: {user_message!r}")
 
         # Быстрый режим
@@ -123,15 +109,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if keyword in user_lower:
                     await update.message.reply_text(reply, reply_markup=feedback_buttons())
                     return
-            await update.message.reply_text("❗ Укажи симптом: «#60сек голова» или «/fast stomach».", reply_markup=feedback_buttons())
+            await update.message.reply_text("❗ Укажи симптом, например: «#60сек голова» или «/fast stomach».", reply_markup=feedback_buttons())
             return
 
-        # Мини-диалоги по симптомам
+        # Мини-диалоги
         if "голова" in user_lower or "headache" in user_lower:
             await update.message.reply_text(
-                "Где именно болит голова — лоб, затылок, виски?\n"
+                "Где именно болит голова? Лоб, затылок, виски?\n"
                 "Какой характер боли: тупая, острая, пульсирующая?\n"
-                "Есть ли тошнота или светобоязнь?"
+                "Есть ли ещё симптомы — тошнота, светобоязнь?"
             )
             user_memory[user_id] = "головная боль"
             return
@@ -154,56 +140,53 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_memory[user_id] = "кашель"
             return
 
-        memory_text = ""
-        if user_id in user_memory:
-            memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n"
+        memory_text = f"(Ты ранее упоминал: {user_memory[user_id]})\n" if user_id in user_memory else ""
 
         system_prompt = (
             "Ты — заботливый и умный помощник по здоровью и долголетию по имени TendAI.\n"
             "Всегда отвечай на том языке, на котором говорит пользователь.\n"
-            "Отвечай по сути, без повторов. При симптоме — 1–2 уточняющих вопроса, 2–3 возможные причины,\n"
-            "что делать дома, и когда идти к врачу. Если боли нет — не нагнетай."
+            "Отвечай по сути, без повторов. Если есть симптом — 1–2 уточняющих вопроса, 2–3 причины,\n"
+            "что делать дома, и когда идти к врачу."
         )
 
-        # ВАЖНО: используем доступную модель и ловим ошибки
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.6,
-                max_tokens=400,
-                timeout=30
-            )
-            bot_reply = memory_text + (response.choices[0].message.content or "").strip()
-        except Exception as e:
-            logging.exception("Ошибка OpenAI")
-            bot_reply = f"Сервис ИИ временно недоступен: {e}. Попробуй ещё раз позже."
+        bot_reply = "Мне нужно чуть больше деталей. Что именно беспокоит?"
+        if client:
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",  # стабильная модель для chat.completions
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message}
+                    ],
+                    temperature=0.6,
+                    max_tokens=400,
+                    timeout=30
+                )
+                bot_reply = memory_text + (response.choices[0].message.content or "").strip()
+            except Exception as e:
+                logging.exception("OpenAI error")
+                bot_reply = f"Сервис ИИ временно недоступен: {e}"
 
         await update.message.reply_text(bot_reply, reply_markup=feedback_buttons())
+
     except Exception:
-        logging.exception("Критическая ошибка в handle_message")
+        logging.exception("handle_message fatal error")
 
-# ---------- Глобальный обработчик ошибок ----------
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logging.exception("Unhandled error", exc_info=context.error)
-
-# ---------- Удаляем webhook и запускаем polling ----------
+# ---------- Логи старта и очистка webhook ----------
 async def on_startup(app):
     try:
+        me = await app.bot.get_me()
+        logging.info(f"Running as @{me.username}")
         await app.bot.delete_webhook(drop_pending_updates=True)
-        info = await app.bot.get_webhook_info()
-        logging.info(f"Webhook cleared. Current webhook: {info.url!r}")
+        logging.info("Webhook cleared")
     except Exception:
-        logging.exception("Не удалось удалить webhook")
+        logging.exception("Startup hook failed")
 
+# ---------- Запуск ----------
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(on_startup).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ping", ping))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(feedback_callback))
-    app.add_error_handler(error_handler)
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+    app.run_polling(drop_pending_updates=True)
