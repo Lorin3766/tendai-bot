@@ -105,7 +105,8 @@ ws_episodes = _get_or_create_ws(
 #   "step": int,
 #   "answers": {"loc":..., "kind":..., "duration":..., "severity":..., "red":...},
 #   "episode_id": "...",
-#   "awaiting_comment": bool
+#   "awaiting_comment": bool,
+#   "last_q_msg_id": int
 # }
 sessions: dict[int, dict] = {}
 
@@ -133,14 +134,14 @@ T = {
         "ask_consent": "May I send you a follow-up later to check how you feel? (Change with /pause or /resume.)",
         "yes": "Yes", "no": "No",
         "choose_topic": "Choose a topic:",
-        "triage_pain_q1": "Where does it hurt?",
+        "triage_pain_q1": "Where does it hurt?\nChoose below ⤵️",
         "triage_pain_q1_opts": ["Head", "Throat", "Back", "Belly", "Chest", "Other"],
-        "triage_pain_q2": "What kind of pain?",
+        "triage_pain_q2": "What kind of pain?\nChoose below ⤵️",
         "triage_pain_q2_opts": ["Dull", "Sharp", "Throbbing", "Burning", "Pressing"],
-        "triage_pain_q3": "How long has it lasted?",
+        "triage_pain_q3": "How long has it lasted?\nChoose below ⤵️",
         "triage_pain_q3_opts": ["<3h", "3–24h", ">1 day", ">1 week"],
         "triage_pain_q4": "Rate the pain now (0–10):",
-        "triage_pain_q5": "Any of these now?",
+        "triage_pain_q5": "Any of these now?\nChoose below ⤵️",
         "triage_pain_q5_opts": ["High fever", "Vomiting", "Weakness/numbness", "Speech/vision issues", "Trauma", "None"],
         "plan_header": "Your 24–48h plan:",
         "plan_accept": "Will you try this today?",
@@ -169,14 +170,14 @@ T = {
         "ask_consent": "Можно прислать напоминание позже, чтобы узнать, как вы? (Меняется командами /pause и /resume.)",
         "yes": "Да", "no": "Нет",
         "choose_topic": "Выберите тему:",
-        "triage_pain_q1": "Где болит?",
+        "triage_pain_q1": "Где болит?\nВыберите ниже ⤵️",
         "triage_pain_q1_opts": ["Голова", "Горло", "Спина", "Живот", "Грудь", "Другое"],
-        "triage_pain_q2": "Какой характер боли?",
+        "triage_pain_q2": "Какой характер боли?\nВыберите ниже ⤵️",
         "triage_pain_q2_opts": ["Тупая", "Острая", "Пульсирующая", "Жгучая", "Давящая"],
-        "triage_pain_q3": "Как долго длится?",
+        "triage_pain_q3": "Как долго длится?\nВыберите ниже ⤵️",
         "triage_pain_q3_opts": ["<3ч", "3–24ч", ">1 дня", ">1 недели"],
         "triage_pain_q4": "Оцените боль (0–10):",
-        "triage_pain_q5": "Есть что-то из этого?",
+        "triage_pain_q5": "Есть что-то из этого?\nВыберите ниже ⤵️",
         "triage_pain_q5_opts": ["Высокая температура", "Рвота", "Слабость/онемение", "Проблемы речи/зрения", "Травма", "Нет"],
         "plan_header": "Ваш план на 24–48 часов:",
         "plan_accept": "Готовы попробовать сегодня?",
@@ -205,14 +206,14 @@ T = {
         "ask_consent": "Можу написати пізніше, щоб дізнатися, як ви? (Змінюється /pause або /resume.)",
         "yes": "Так", "no": "Ні",
         "choose_topic": "Оберіть тему:",
-        "triage_pain_q1": "Де болить?",
+        "triage_pain_q1": "Де болить?\nВиберіть нижче ⤵️",
         "triage_pain_q1_opts": ["Голова", "Горло", "Спина", "Живіт", "Груди", "Інше"],
-        "triage_pain_q2": "Який характер болю?",
+        "triage_pain_q2": "Який характер болю?\nВиберіть нижче ⤵️",
         "triage_pain_q2_opts": ["Тупий", "Гострий", "Пульсівний", "Пекучий", "Тиснучий"],
-        "triage_pain_q3": "Як довго триває?",
+        "triage_pain_q3": "Як довго триває?\nВиберіть нижче ⤵️",
         "triage_pain_q3_opts": ["<3год", "3–24год", ">1 дня", ">1 тижня"],
         "triage_pain_q4": "Оцініть біль (0–10):",
-        "triage_pain_q5": "Є щось із цього?",
+        "triage_pain_q5": "Є щось із цього?\nВиберіть нижче ⤵️",
         "triage_pain_q5_opts": ["Висока температура", "Блювання", "Слабкість/оніміння", "Мова/зір", "Травма", "Немає"],
         "plan_header": "Ваш план на 24–48 год:",
         "plan_accept": "Готові спробувати сьогодні?",
@@ -241,14 +242,14 @@ T = {
         "ask_consent": "¿Puedo escribirte más tarde para saber cómo sigues? (Cámbialo con /pause o /resume.)",
         "yes": "Sí", "no": "No",
         "choose_topic": "Elige un tema:",
-        "triage_pain_q1": "¿Dónde te duele?",
+        "triage_pain_q1": "¿Dónde te duele?\nElige abajo ⤵️",
         "triage_pain_q1_opts": ["Cabeza", "Garganta", "Espalda", "Vientre", "Pecho", "Otro"],
-        "triage_pain_q2": "¿Qué tipo de dolor?",
+        "triage_pain_q2": "¿Qué tipo de dolor?\nElige abajo ⤵️",
         "triage_pain_q2_opts": ["Sordo", "Agudo", "Palpitante", "Ardor", "Opresivo"],
-        "triage_pain_q3": "¿Desde cuándo lo tienes?",
+        "triage_pain_q3": "¿Desde cuándo lo tienes?\nElige abajo ⤵️",
         "triage_pain_q3_opts": ["<3h", "3–24h", ">1 día", ">1 semana"],
         "triage_pain_q4": "Valora el dolor ahora (0–10):",
-        "triage_pain_q5": "¿Alguno de estos ahora?",
+        "triage_pain_q5": "¿Alguno de estos ahora?\nElige abajo ⤵️",
         "triage_pain_q5_opts": ["Fiebre alta", "Vómitos", "Debilidad/entumecimiento", "Habla/visión", "Trauma", "Ninguno"],
         "plan_header": "Tu plan para 24–48 h:",
         "plan_accept": "¿Lo intentas hoy?",
@@ -519,13 +520,9 @@ def inline_kb_for_step(lang: str, step: int) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(rows)
 
 async def send_step_question(message, lang: str, step: int):
-    # Текст вопроса
     key = {1: "triage_pain_q1", 2: "triage_pain_q2", 3: "triage_pain_q3", 4: "triage_pain_q4", 5: "triage_pain_q5"}[step]
     if step in {1, 2, 3, 5}:
-        await message.reply_text(
-            t(lang, key),
-            reply_markup=inline_kb_for_step(lang, step)
-        )
+        await message.reply_text(t(lang, key), reply_markup=inline_kb_for_step(lang, step))
     elif step == 4:
         await message.reply_text(t(lang, key), reply_markup=numeric_keyboard_0_10(lang))
 
@@ -533,7 +530,6 @@ async def send_step_question(message, lang: str, step: int):
 # Plan builder
 # =========================
 def pain_plan(lang: str, red_flags_selected: list[str]) -> list[str]:
-    # Если есть флаги — строгая рекомендация
     if any(s for s in red_flags_selected if s and s.lower() not in ["none", "нет", "немає", "ninguno"]):
         return {
             "ru": ["⚠️ Есть тревожные признаки. Пожалуйста, как можно скорее оценитесь у врача/в неотложке."],
@@ -594,18 +590,15 @@ async def job_checkin(context: ContextTypes.DEFAULT_TYPE):
 # Commands
 # =========================
 async def on_startup(app):
-    # чистим вебхук, чтобы polling не конфликтовал
     try:
         await app.bot.delete_webhook(drop_pending_updates=True)
         logging.info("Webhook cleared")
     except Exception:
         pass
-    # восстанавливаем отложенные чек-ины
     schedule_from_sheet_on_start(app)
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    # язык: сохранённый -> detect -> Telegram
     lang = users_get(user.id).get("lang")
     if not lang:
         txt = (update.message.text or "").strip() if update.message else ""
@@ -646,11 +639,9 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    # Users
     idx = users_get_row_index(uid)
     if idx:
         ws_users.delete_rows(idx)
-    # Episodes
     vals = ws_episodes.get_all_values()
     to_delete = []
     for i in range(2, len(vals)+1):
@@ -679,15 +670,12 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     s = sessions.get(uid, {})
     if s.get("awaiting_comment"):
-        # если ждали комментарий к отзыву — просто сбрасываем
         s["awaiting_comment"] = False
         lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user,"language_code",None))
         await update.message.reply_text(t(lang, "skip_ok"))
     else:
-        # в слот-диалоге пропустим текущий шаг (если есть)
         step = s.get("step")
         if step in {2,3,4,5}:
-            # пометим пропуски
             if step == 2:
                 s.setdefault("answers", {})["kind"] = "skip"
             elif step == 3:
@@ -697,6 +685,46 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif step == 5:
                 s.setdefault("answers", {})["red"] = "None"
             await continue_pain_triage(update, context, norm_lang(users_get(uid).get("lang")), uid, "/skip")
+
+# =========================
+# Auto language switch
+# =========================
+GREET_WORDS = {
+    "en": {"hi", "hello", "hey"},
+    "ru": {"привет", "здравствуйте", "хай"},
+    "uk": {"привіт", "вітаю"},
+    "es": {"hola", "buenas"},
+}
+
+def maybe_autoswitch_lang(uid: int, text: str, cur_lang: str) -> str:
+    if not text or text.startswith("/"):
+        return cur_lang
+    tl = text.strip().lower()
+
+    # 1) быстрые маркеры по приветствиям
+    for lang_code, words in GREET_WORDS.items():
+        if tl in words:
+            if lang_code != cur_lang:
+                users_set(uid, "lang", lang_code)
+            return lang_code
+
+    # 2) эвристика по алфавиту
+    has_lat = bool(re.search(r"[A-Za-z]", text))
+    has_cyr = bool(re.search(r"[А-Яа-яЁёІіЇїЄє]", text))
+    if has_lat and not has_cyr and cur_lang != "en":
+        users_set(uid, "lang", "en")
+        return "en"
+
+    # 3) langdetect с порогом (короткие строки могут врать)
+    if detect:
+        try:
+            cand = norm_lang(detect(text))
+            if cand in SUPPORTED and cand != cur_lang and len(tl) >= 2:
+                users_set(uid, "lang", cand)
+                return cand
+        except Exception:
+            pass
+    return cur_lang
 
 # =========================
 # Callback handler
@@ -719,7 +747,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data in {"feedback_yes","feedback_no"}:
         rating = "1" if data.endswith("yes") else "0"
         ws_feedback.append_row([datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), str(uid), data, q.from_user.username or "", rating, ""])
-        # ждём комментарий
         sessions.setdefault(uid, {})["awaiting_comment"] = True
         try:
             await q.edit_message_reply_markup(reply_markup=None)
@@ -727,9 +754,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await q.message.reply_text(t(lang, "comment_prompt"))
 
-    # ----- NEW: обработка выбора инлайн-кнопок для шагов -----
     elif data.startswith("pain|s|"):
-        # pattern: pain|s|<step>|<index>
         try:
             _, _, step_str, idx_str = data.split("|")
             step = int(step_str)
@@ -740,7 +765,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         s = sessions.setdefault(uid, {"topic": "pain", "step": 1, "answers": {}})
         ans = s.setdefault("answers", {})
 
-        # Получаем ярлык по индексу
         labels_map = {
             1: T[lang]["triage_pain_q1_opts"],
             2: T[lang]["triage_pain_q2_opts"],
@@ -752,7 +776,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         label = labels[idx]
 
-        # Сохраняем слот
         if step == 1:
             ans["loc"] = label
         elif step == 2:
@@ -764,19 +787,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         s["answers"] = ans
 
-        # Подтверждаем выбор — редактируем то же сообщение
         q_key = {1: "triage_pain_q1", 2: "triage_pain_q2", 3: "triage_pain_q3", 5: "triage_pain_q5"}[step]
         try:
             await q.edit_message_text(f"{t(lang, q_key)}\n• {label} ✅")
         except Exception:
-            # если нельзя редактировать, просто уберём клавиатуру
             try:
                 await q.edit_message_reply_markup(reply_markup=None)
             except Exception:
                 pass
 
-        # Определяем следующий шаг
-        def _next_missing_step(ans_local: dict) -> int:
+        def _next_missing_step_local(ans_local: dict) -> int:
             if "loc" not in ans_local: return 1
             if "kind" not in ans_local: return 2
             if "duration" not in ans_local: return 3
@@ -784,14 +804,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "red" not in ans_local: return 5
             return 6
 
-        next_step = _next_missing_step(ans)
+        next_step = _next_missing_step_local(ans)
         s["step"] = next_step
         sessions[uid] = s
 
         if next_step <= 5:
             await send_step_question(q.message, lang, next_step)
         else:
-            # финал: создаём эпизод + план
             sev = int(ans.get("severity", 5))
             red = ans.get("red", "None")
             eid = episode_create(uid, "pain", sev, red)
@@ -804,7 +823,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Scenario: Pain with slots
 # =========================
 def _next_missing_step(ans: dict) -> int:
-    # 1: loc, 2: kind, 3: duration, 4: severity, 5: red_flags, 6: plan, 7: remind
     if "loc" not in ans: return 1
     if "kind" not in ans: return 2
     if "duration" not in ans: return 3
@@ -813,14 +831,15 @@ def _next_missing_step(ans: dict) -> int:
     return 6
 
 async def _ask_for_step(update: Update, lang: str, step: int):
-    # Используем инлайн-кнопки (видно под сообщением) + числовая клавиатура для оценки
     if step in {1, 2, 3, 5}:
-        await update.message.reply_text(
+        sent = await update.message.reply_text(
             t(lang, {1:"triage_pain_q1",2:"triage_pain_q2",3:"triage_pain_q3",5:"triage_pain_q5"}[step]),
             reply_markup=inline_kb_for_step(lang, step),
         )
+        sessions.setdefault(update.effective_user.id, {}).update({"last_q_msg_id": sent.message_id})
     elif step == 4:
-        await update.message.reply_text(t(lang,"triage_pain_q4"), reply_markup=numeric_keyboard_0_10(lang))
+        sent = await update.message.reply_text(t(lang,"triage_pain_q4"), reply_markup=numeric_keyboard_0_10(lang))
+        sessions.setdefault(update.effective_user.id, {}).update({"last_q_msg_id": sent.message_id})
 
 async def start_pain_triage(update: Update, lang: str, uid: int, seed_text: str | None = None):
     sessions[uid] = {"topic": "pain", "step": 1, "answers": {}}
@@ -834,44 +853,57 @@ async def continue_pain_triage(update: Update, context: ContextTypes.DEFAULT_TYP
     s = sessions.get(uid, {})
     ans = s.get("answers", {})
 
-    # сначала попробуем распарсить вход
     slots = extract_slots(text, lang)
     for k, v in slots.items():
         ans.setdefault(k, v)
 
-    # какой шаг сейчас незакрыт?
     step = _next_missing_step(ans)
 
-    # если слотом не закрылось — используем прямой ответ
+    # строгая валидация — свободный текст пишем только если распознали
     if step == 1:
-        ans["loc"] = slots.get("loc") or text
+        if "loc" not in ans:
+            await _ask_for_step(update, lang, 1)
+            return
     elif step == 2:
-        ans["kind"] = slots.get("kind") or text
+        if "kind" not in ans:
+            await _ask_for_step(update, lang, 2)
+            return
     elif step == 3:
-        ans["duration"] = slots.get("duration") or text
+        if "duration" not in ans:
+            await _ask_for_step(update, lang, 3)
+            return
     elif step == 4:
         sev = slots.get("severity")
         if sev is None:
-            try: sev = int(text)
-            except Exception: sev = None
+            try:
+                sev = int(text)
+            except Exception:
+                sev = None
         if sev is None:
             await update.message.reply_text(t(lang,"triage_pain_q4"), reply_markup=numeric_keyboard_0_10(lang))
             return
         ans["severity"] = sev
     elif step == 5:
-        ans["red"] = text
+        if "red" not in ans:
+            await _ask_for_step(update, lang, 5)
+            return
 
     s["answers"] = ans
 
-    # дальше по шагам
     step = _next_missing_step(ans)
     if step <= 5:
+        # убираем старую клавиатуру, если можем
+        msg_id = s.get("last_q_msg_id")
+        if msg_id:
+            try:
+                await context.bot.edit_message_reply_markup(chat_id=uid, message_id=msg_id, reply_markup=None)
+            except Exception:
+                pass
         await _ask_for_step(update, lang, step)
         s["step"] = step
         sessions[uid] = s
         return
 
-    # у нас есть всё — создаём эпизод + план
     sev = int(ans.get("severity", 5))
     red = ans.get("red", "None")
     eid = episode_create(uid, "pain", sev, red)
@@ -888,14 +920,12 @@ async def continue_pain_triage(update: Update, context: ContextTypes.DEFAULT_TYP
 # =========================
 def detect_or_choose_topic(lang: str, text: str) -> str | None:
     tl = text.lower().strip()
-    # слова-триггеры
     if any(w in tl for w in ["болит","боль","hurt","pain","dolor","болю"]): return "pain"
     if any(w in tl for w in ["горло","throat","garganta","простуд","cold"]): return "throat"
     if any(w in tl for w in ["сон","sleep","sueñ"]): return "sleep"
     if any(w in tl for w in ["стресс","stress","estrés"]): return "stress"
     if any(w in tl for w in ["живот","желуд","живіт","стул","понос","диар","digest","estómago","barriga","abdomen"]): return "digestion"
     if any(w in tl for w in ["энерг","енерг","energy","fatigue","слабость","energía","cansancio"]): return "energy"
-    # кнопки меню
     for label, key in TOPIC_KEYS.get(lang, TOPIC_KEYS["en"]).items():
         if text.strip() == label: return key
     return None
@@ -908,7 +938,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = user.id
     text = (update.message.text or "").strip()
 
-    # выясняем язык
     urec = users_get(uid)
     if not urec:
         cand = None
@@ -921,8 +950,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users_upsert(uid, user.username or "", lang)
     else:
         lang = norm_lang(urec.get("lang") or getattr(user,"language_code",None))
+        # АВТО-переключение языка по сообщению
+        lang = maybe_autoswitch_lang(uid, text, lang)
 
-    # если ждём комментарий к фидбеку
     s = sessions.get(uid, {})
     if s.get("awaiting_comment") and not text.startswith("/"):
         ws_feedback.append_row([datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), str(uid), "comment", user.username or "", "", text])
@@ -931,29 +961,25 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(lang, "comment_saved"))
         return
 
-    # если в активном pain-потоке
     if s.get("topic") == "pain":
         await continue_pain_triage(update, context, lang, uid, text)
         return
 
-    # детект темы и старт
     topic = detect_or_choose_topic(lang, text)
     if topic == "pain":
         await start_pain_triage(update, lang, uid, seed_text=text)
         return
     elif topic in {"throat","sleep","stress","digestion","energy"}:
-        # пока используем тот же поток (универсальный мини-триаж)
         await start_pain_triage(update, lang, uid, seed_text=text)
         return
 
-    # фолбэк: LLM (минимум токенов)
     if oai:
         try:
             prompt = ("You are TendAI, a warm, concise health & longevity assistant. "
                       "Ask 1–2 clarifying questions, list 2–3 possible causes, "
                       "1–3 simple at-home steps, and when to seek care. "
                       "Reply in the user's language. Keep it short.")
-            resp = oai.chat.completions.create(
+            resp = oai.chat_completions.create(  # .chat.completions in older libs; .chat_completions for newer
                 model="gpt-4o-mini",
                 messages=[{"role":"system","content":prompt},
                           {"role":"user","content":text}],
@@ -971,7 +997,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"OpenAI error: {e}")
 
-    # дефолт
     await update.message.reply_text(t(lang, "unknown"), reply_markup=main_menu(lang))
 
 # числа 0–10 — считаем ответом на чек-ин
@@ -990,7 +1015,6 @@ async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(lang, "thanks"))
         return
     eid = ep.get("episode_id")
-    # сохраним как заметку
     episode_set(eid, "notes", f"checkin:{val}")
     if val <= 3:
         await update.message.reply_text(t(lang, "checkin_better"), reply_markup=main_menu(lang))
@@ -1004,8 +1028,6 @@ async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(on_startup).build()
 
-    # восстановим запланированные чек-ины
-    # (делаем и здесь на всякий, если post_init не вызовется)
     schedule_from_sheet_on_start(app)
 
     app.add_handler(CommandHandler("start", cmd_start))
@@ -1019,9 +1041,7 @@ def main():
 
     app.add_handler(CallbackQueryHandler(on_callback))
 
-    # сначала ловим числа (чек-ин)
     app.add_handler(MessageHandler(filters.Regex(r"^(?:[0-9]|10)$"), on_number_reply))
-    # затем всё остальное текстовое
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
     app.run_polling(drop_pending_updates=True)
