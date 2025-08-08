@@ -496,6 +496,39 @@ def accept_keyboard(lang: str) -> ReplyKeyboardMarkup:
 def remind_keyboard(lang: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup([T[lang]["remind_opts"]], resize_keyboard=True, one_time_keyboard=True)
 
+# ----- NEW: Inline keyboards for steps (видно прямо под вопросом) -----
+def inline_kb_for_step(lang: str, step: int) -> InlineKeyboardMarkup | None:
+    if step == 1:
+        labels = T[lang]["triage_pain_q1_opts"]
+    elif step == 2:
+        labels = T[lang]["triage_pain_q2_opts"]
+    elif step == 3:
+        labels = T[lang]["triage_pain_q3_opts"]
+    elif step == 5:
+        labels = T[lang]["triage_pain_q5_opts"]
+    else:
+        return None
+    per_row = 3 if len(labels) >= 6 else 2
+    rows = []
+    for i in range(0, len(labels), per_row):
+        row = [
+            InlineKeyboardButton(text=labels[j], callback_data=f"pain|s|{step}|{j}")
+            for j in range(i, min(i + per_row, len(labels)))
+        ]
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+async def send_step_question(message, lang: str, step: int):
+    # Текст вопроса
+    key = {1: "triage_pain_q1", 2: "triage_pain_q2", 3: "triage_pain_q3", 4: "triage_pain_q4", 5: "triage_pain_q5"}[step]
+    if step in {1, 2, 3, 5}:
+        await message.reply_text(
+            t(lang, key),
+            reply_markup=inline_kb_for_step(lang, step)
+        )
+    elif step == 4:
+        await message.reply_text(t(lang, key), reply_markup=numeric_keyboard_0_10(lang))
+
 # =========================
 # Plan builder
 # =========================
@@ -694,6 +727,79 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await q.message.reply_text(t(lang, "comment_prompt"))
 
+    # ----- NEW: обработка выбора инлайн-кнопок для шагов -----
+    elif data.startswith("pain|s|"):
+        # pattern: pain|s|<step>|<index>
+        try:
+            _, _, step_str, idx_str = data.split("|")
+            step = int(step_str)
+            idx = int(idx_str)
+        except Exception:
+            return
+
+        s = sessions.setdefault(uid, {"topic": "pain", "step": 1, "answers": {}})
+        ans = s.setdefault("answers", {})
+
+        # Получаем ярлык по индексу
+        labels_map = {
+            1: T[lang]["triage_pain_q1_opts"],
+            2: T[lang]["triage_pain_q2_opts"],
+            3: T[lang]["triage_pain_q3_opts"],
+            5: T[lang]["triage_pain_q5_opts"],
+        }
+        labels = labels_map.get(step, [])
+        if idx < 0 or idx >= len(labels):
+            return
+        label = labels[idx]
+
+        # Сохраняем слот
+        if step == 1:
+            ans["loc"] = label
+        elif step == 2:
+            ans["kind"] = label
+        elif step == 3:
+            ans["duration"] = label
+        elif step == 5:
+            ans["red"] = label
+
+        s["answers"] = ans
+
+        # Подтверждаем выбор — редактируем то же сообщение
+        q_key = {1: "triage_pain_q1", 2: "triage_pain_q2", 3: "triage_pain_q3", 5: "triage_pain_q5"}[step]
+        try:
+            await q.edit_message_text(f"{t(lang, q_key)}\n• {label} ✅")
+        except Exception:
+            # если нельзя редактировать, просто уберём клавиатуру
+            try:
+                await q.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+        # Определяем следующий шаг
+        def _next_missing_step(ans_local: dict) -> int:
+            if "loc" not in ans_local: return 1
+            if "kind" not in ans_local: return 2
+            if "duration" not in ans_local: return 3
+            if "severity" not in ans_local: return 4
+            if "red" not in ans_local: return 5
+            return 6
+
+        next_step = _next_missing_step(ans)
+        s["step"] = next_step
+        sessions[uid] = s
+
+        if next_step <= 5:
+            await send_step_question(q.message, lang, next_step)
+        else:
+            # финал: создаём эпизод + план
+            sev = int(ans.get("severity", 5))
+            red = ans.get("red", "None")
+            eid = episode_create(uid, "pain", sev, red)
+            s["episode_id"] = eid
+            plan_lines = pain_plan(lang, [red])
+            await q.message.reply_text(f"{t(lang,'plan_header')}\n" + "\n".join(plan_lines))
+            await q.message.reply_text(t(lang,"plan_accept"), reply_markup=accept_keyboard(lang))
+
 # =========================
 # Scenario: Pain with slots
 # =========================
@@ -707,28 +813,14 @@ def _next_missing_step(ans: dict) -> int:
     return 6
 
 async def _ask_for_step(update: Update, lang: str, step: int):
-    if step == 1:
+    # Используем инлайн-кнопки (видно под сообщением) + числовая клавиатура для оценки
+    if step in {1, 2, 3, 5}:
         await update.message.reply_text(
-            t(lang,"triage_pain_q1"),
-            reply_markup=ReplyKeyboardMarkup([T[lang]["triage_pain_q1_opts"]], resize_keyboard=True, one_time_keyboard=True),
-        )
-    elif step == 2:
-        await update.message.reply_text(
-            t(lang,"triage_pain_q2"),
-            reply_markup=ReplyKeyboardMarkup([T[lang]["triage_pain_q2_opts"]], resize_keyboard=True, one_time_keyboard=True),
-        )
-    elif step == 3:
-        await update.message.reply_text(
-            t(lang,"triage_pain_q3"),
-            reply_markup=ReplyKeyboardMarkup([T[lang]["triage_pain_q3_opts"]], resize_keyboard=True, one_time_keyboard=True),
+            t(lang, {1:"triage_pain_q1",2:"triage_pain_q2",3:"triage_pain_q3",5:"triage_pain_q5"}[step]),
+            reply_markup=inline_kb_for_step(lang, step),
         )
     elif step == 4:
         await update.message.reply_text(t(lang,"triage_pain_q4"), reply_markup=numeric_keyboard_0_10(lang))
-    elif step == 5:
-        await update.message.reply_text(
-            t(lang,"triage_pain_q5"),
-            reply_markup=ReplyKeyboardMarkup([T[lang]["triage_pain_q5_opts"]], resize_keyboard=True, one_time_keyboard=True),
-        )
 
 async def start_pain_triage(update: Update, lang: str, uid: int, seed_text: str | None = None):
     sessions[uid] = {"topic": "pain", "step": 1, "answers": {}}
