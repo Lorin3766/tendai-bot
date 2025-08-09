@@ -31,7 +31,7 @@ from telegram.ext import (
     filters,
 )
 
-# ===== OpenAI (для гибридного парсера и фолбэка) =====
+# ===== OpenAI (для гибридного парсера/подсказок) =====
 try:
     from openai import OpenAI
 except Exception:
@@ -102,14 +102,12 @@ ws_episodes = _get_or_create_ws(
 # =========================
 # sessions[user_id] = {
 #   "topic": "pain",
-#   "step": int,
-#   "answers": {...},
+#   "flow": "collect"|"confirm"|"redflags"|"zone"|"plan"|"accept_wait"|"remind_wait",
+#   "answers": {"loc","kind","duration","severity","red"},
+#   "zone": {"name": "head/back/belly/chest/throat", "idx": 1..3, "q": {1:"yes"/"no"/"maybe", ...}},
 #   "episode_id": "...",
 #   "awaiting_comment": bool,
 #   "feedback_context": str,
-#   "awaiting_accept": bool,
-#   "awaiting_remind": bool,
-#   "last_q_msg_id": int
 # }
 sessions: dict[int, dict] = {}
 
@@ -137,6 +135,7 @@ T = {
         "ask_consent": "May I send you a follow-up later to check how you feel? (Change with /pause or /resume.)",
         "yes": "Yes", "no": "No",
         "choose_topic": "Choose a topic:",
+        "open_prompt": "Briefly: where is the pain, how does it feel (sharp/dull/etc.), and how long has it lasted?\nExamples: “Head, throbbing, 3 hours” / “Lower back, sharp when bending, 2 days”.",
         "triage_pain_q1": "Where does it hurt?\nChoose below ⤵️",
         "triage_pain_q1_opts": ["Head", "Throat", "Back", "Belly", "Chest", "Other"],
         "triage_pain_q2": "What kind of pain?\nChoose below ⤵️",
@@ -144,8 +143,18 @@ T = {
         "triage_pain_q3": "How long has it lasted?\nChoose below ⤵️",
         "triage_pain_q3_opts": ["<3h", "3–24h", ">1 day", ">1 week"],
         "triage_pain_q4": "Rate the pain now (0–10):",
-        "triage_pain_q5": "Any of these now?\nChoose below ⤵️",
+        "triage_pain_q5": "Any of these now?\n(High fever, Vomiting, Weakness/numbness, Speech/vision issues, Trauma, None)",
         "triage_pain_q5_opts": ["High fever", "Vomiting", "Weakness/numbness", "Speech/vision issues", "Trauma", "None"],
+        "confirm_title": "Please confirm I got this right:",
+        "confirm_loc": "• Where: {loc}",
+        "confirm_kind": "• Character: {kind}",
+        "confirm_duration": "• Duration: {duration}",
+        "confirm_severity": "• Severity: {severity}/10",
+        "confirm_ok": "✅ Looks correct",
+        "confirm_change_loc": "✏️ Change Where",
+        "confirm_change_kind": "✏️ Change Character",
+        "confirm_change_duration": "✏️ Change Duration",
+        "confirm_change_severity": "✏️ Change Severity",
         "plan_header": "Your 24–48h plan:",
         "plan_accept": "Will you try this today?",
         "accept_opts": ["✅ Yes", "🔁 Later", "✖️ No"],
@@ -168,6 +177,25 @@ T = {
         "fb_like": "👍 Useful",
         "fb_dislike": "👎 Didn’t help",
         "fb_write": "✍️ Write a comment",
+        # Zone questions
+        "ans_yes": "Yes",
+        "ans_no": "No",
+        "ans_maybe": "Not sure",
+        "zone_head_q1": "Sudden 'thunderclap' or worst-ever headache?",
+        "zone_head_q2": "Any speech/vision trouble or weakness?",
+        "zone_head_q3": "Neck stiffness or fever?",
+        "zone_back_q1": "Numbness in groin or loss of bladder/bowel control?",
+        "zone_back_q2": "Recent trauma, fever, cancer history or steroids?",
+        "zone_back_q3": "Does pain shoot below the knee?",
+        "zone_belly_q1": "Where exactly: upper/lower, right/left, or center?",
+        "zone_belly_q2": "Related to food, fatty meals, or alcohol?",
+        "zone_belly_q3": "Vomiting/diarrhea or no gas/stool? Fever or pregnancy?",
+        "zone_chest_q1": "Pressure behind sternum >10 min with shortness of breath or cold sweat?",
+        "zone_chest_q2": "Worse with deep breath/movement or when pressing the chest?",
+        "zone_chest_q3": "Cough or fever?",
+        "zone_throat_q1": "Fever or tonsillar exudate (white patches)?",
+        "zone_throat_q2": "Cough or recent sick contact?",
+        "zone_throat_q3": "Worse on swallowing or at night?",
     },
     "ru": {
         "welcome": "Привет! Я TendAI — ассистент здоровья и долголетия.\nВыбери тему ниже или опиши, что беспокоит.",
@@ -180,6 +208,7 @@ T = {
         "ask_consent": "Можно прислать напоминание позже, чтобы узнать, как вы? (Меняется командами /pause и /resume.)",
         "yes": "Да", "no": "Нет",
         "choose_topic": "Выберите тему:",
+        "open_prompt": "Коротко: где болит, как чувствуется (острая/тупая и т.п.) и сколько длится?\nПримеры: «Голова, пульсирующая, 3 часа» / «Поясница, колющая при наклоне, 2 дня».",
         "triage_pain_q1": "Где болит?\nВыберите ниже ⤵️",
         "triage_pain_q1_opts": ["Голова", "Горло", "Спина", "Живот", "Грудь", "Другое"],
         "triage_pain_q2": "Какой характер боли?\nВыберите ниже ⤵️",
@@ -187,8 +216,18 @@ T = {
         "triage_pain_q3": "Как долго длится?\nВыберите ниже ⤵️",
         "triage_pain_q3_opts": ["<3ч", "3–24ч", ">1 дня", ">1 недели"],
         "triage_pain_q4": "Оцените боль (0–10):",
-        "triage_pain_q5": "Есть что-то из этого?\nВыберите ниже ⤵️",
+        "triage_pain_q5": "Есть что-то из этого?\n(Высокая температура, Рвота, Слабость/онемение, Проблемы речи/зрения, Травма, Нет)",
         "triage_pain_q5_opts": ["Высокая температура", "Рвота", "Слабость/онемение", "Проблемы речи/зрения", "Травма", "Нет"],
+        "confirm_title": "Проверьте, верно ли я понял:",
+        "confirm_loc": "• Где: {loc}",
+        "confirm_kind": "• Характер: {kind}",
+        "confirm_duration": "• Длительность: {duration}",
+        "confirm_severity": "• Интенсивность: {severity}/10",
+        "confirm_ok": "✅ Всё верно",
+        "confirm_change_loc": "✏️ Изменить «Где»",
+        "confirm_change_kind": "✏️ Изменить «Характер»",
+        "confirm_change_duration": "✏️ Изменить «Длительность»",
+        "confirm_change_severity": "✏️ Изменить «Интенсивность»",
         "plan_header": "Ваш план на 24–48 часов:",
         "plan_accept": "Готовы попробовать сегодня?",
         "accept_opts": ["✅ Да", "🔁 Позже", "✖️ Нет"],
@@ -211,6 +250,24 @@ T = {
         "fb_like": "👍 Полезно",
         "fb_dislike": "👎 Не помогло",
         "fb_write": "✍️ Написать отзыв",
+        "ans_yes": "Да",
+        "ans_no": "Нет",
+        "ans_maybe": "Не знаю",
+        "zone_head_q1": "Внезапная «как удар»/самая сильная?",
+        "zone_head_q2": "Проблемы с речью/зрением или слабость?",
+        "zone_head_q3": "Ригидность шеи или температура?",
+        "zone_back_q1": "Онемение в паху/потеря контроля мочи/стула?",
+        "zone_back_q2": "Недавняя травма, лихорадка, онкология, стероиды?",
+        "zone_back_q3": "Отдаёт ниже колена?",
+        "zone_belly_q1": "Где точнее: верх/низ, право/лево, центр?",
+        "zone_belly_q2": "Связь с едой/жирным/алкоголем?",
+        "zone_belly_q3": "Рвота/понос или задержка газов/стула? Жар/беременность?",
+        "zone_chest_q1": "Давящая за грудиной >10 мин с одышкой/холодным потом?",
+        "zone_chest_q2": "Хуже при вдохе/движении или при надавливании?",
+        "zone_chest_q3": "Кашель или температура?",
+        "zone_throat_q1": "Температура или налёт на миндалинах?",
+        "zone_throat_q2": "Кашель или недавний контакт с больными?",
+        "zone_throat_q3": "Боль при глотании или ночью хуже?",
     },
     "uk": {
         "welcome": "Привіт! Я TendAI — асистент здоров’я та довголіття.\nОбери тему нижче або опиши, що турбує.",
@@ -223,13 +280,24 @@ T = {
         "ask_consent": "Можу написати пізніше, щоб дізнатися, як ви? (Змінюється /pause або /resume.)",
         "yes": "Так", "no": "Ні",
         "choose_topic": "Оберіть тему:",
+        "open_prompt": "Коротко: де болить, який характер (гострий/тупий і т.д.) і скільки триває?\nПриклади: «Голова, пульсівний, 3 год» / «Поперек, гострий при нахилі, 2 дні».",
         "triage_pain_q1": "Де болить?\nВиберіть нижче ⤵️",
         "triage_pain_q2": "Який характер болю?\nВиберіть нижче ⤵️",
         "triage_pain_q3": "Як довго триває?\nВиберіть нижче ⤵️",
         "triage_pain_q3_opts": ["<3год", "3–24год", ">1 дня", ">1 тижня"],
         "triage_pain_q4": "Оцініть біль (0–10):",
-        "triage_pain_q5": "Є щось із цього?\nВиберіть нижче ⤵️",
+        "triage_pain_q5": "Є щось із цього?\n(Висока температура, Блювання, Слабкість/оніміння, Мова/зір, Травма, Немає)",
         "triage_pain_q5_opts": ["Висока температура", "Блювання", "Слабкість/оніміння", "Мова/зір", "Травма", "Немає"],
+        "confirm_title": "Підтвердіть, чи правильно я зрозумів:",
+        "confirm_loc": "• Де: {loc}",
+        "confirm_kind": "• Характер: {kind}",
+        "confirm_duration": "• Тривалість: {duration}",
+        "confirm_severity": "• Інтенсивність: {severity}/10",
+        "confirm_ok": "✅ Все вірно",
+        "confirm_change_loc": "✏️ Змінити «Де»",
+        "confirm_change_kind": "✏️ Змінити «Характер»",
+        "confirm_change_duration": "✏️ Змінити «Тривалість»",
+        "confirm_change_severity": "✏️ Змінити «Інтенсивність»",
         "plan_header": "Ваш план на 24–48 год:",
         "plan_accept": "Готові спробувати сьогодні?",
         "accept_opts": ["✅ Так", "🔁 Пізніше", "✖️ Ні"],
@@ -252,6 +320,24 @@ T = {
         "fb_like": "👍 Корисно",
         "fb_dislike": "👎 Не допомогло",
         "fb_write": "✍️ Написати відгук",
+        "ans_yes": "Так",
+        "ans_no": "Ні",
+        "ans_maybe": "Не знаю",
+        "zone_head_q1": "Раптовий «удар»/найсильніший у житті?",
+        "zone_head_q2": "Проблеми з мовою/зором або слабкість?",
+        "zone_head_q3": "Ригідність шиї або температура?",
+        "zone_back_q1": "Оніміння в паху/втрата контролю сечі/стулу?",
+        "zone_back_q2": "Травма, гарячка, онкологія або стероїди?",
+        "zone_back_q3": "Віддає нижче коліна?",
+        "zone_belly_q1": "Де саме: верх/низ, право/ліво, центр?",
+        "zone_belly_q2": "Зв’язок з їжею/жирним/алкоголем?",
+        "zone_belly_q3": "Блювання/діарея чи затримка газів/стулу? Жар/вагітність?",
+        "zone_chest_q1": "Тиснучий біль за грудиною >10 хв з задишкою/холодним потом?",
+        "zone_chest_q2": "Гірше при вдиху/русі чи при натисканні?",
+        "zone_chest_q3": "Кашель або температура?",
+        "zone_throat_q1": "Температура або наліт на мигдаликах?",
+        "zone_throat_q2": "Кашель або недавній контакт із хворими?",
+        "zone_throat_q3": "Біль при ковтанні або гірше вночі?",
     },
     "es": {
         "welcome": "¡Hola! Soy TendAI, tu asistente de salud y longevidad.\nElige un tema o describe qué te molesta.",
@@ -264,13 +350,24 @@ T = {
         "ask_consent": "¿Puedo escribirte más tarde para saber cómo sigues? (Cámbialo con /pause o /resume.)",
         "yes": "Sí", "no": "No",
         "choose_topic": "Elige un tema:",
+        "open_prompt": "Breve: ¿dónde duele, cómo se siente (agudo/sordo, etc.) y desde cuándo?\nEj.: «Cabeza, palpitante, 3 h» / «Lumbar, punzante al agacharme, 2 días».",
         "triage_pain_q1": "¿Dónde te duele?\nElige abajo ⤵️",
         "triage_pain_q2": "¿Qué tipo de dolor?\nElige abajo ⤵️",
         "triage_pain_q3": "¿Desde cuándo lo tienes?\nElige abajo ⤵️",
         "triage_pain_q3_opts": ["<3h", "3–24h", ">1 día", ">1 semana"],
         "triage_pain_q4": "Valora el dolor ahora (0–10):",
-        "triage_pain_q5": "¿Alguno de estos ahora?\nElige abajo ⤵️",
+        "triage_pain_q5": "¿Alguno de estos ahora?\n(Fiebre alta, Vómitos, Debilidad/entumecimiento, Habla/visión, Trauma, Ninguno)",
         "triage_pain_q5_opts": ["Fiebre alta", "Vómitos", "Debilidad/entumecimiento", "Habla/visión", "Trauma", "Ninguno"],
+        "confirm_title": "Confirma si lo entendí bien:",
+        "confirm_loc": "• Dónde: {loc}",
+        "confirm_kind": "• Tipo: {kind}",
+        "confirm_duration": "• Duración: {duration}",
+        "confirm_severity": "• Intensidad: {severity}/10",
+        "confirm_ok": "✅ Correcto",
+        "confirm_change_loc": "✏️ Cambiar «Dónde»",
+        "confirm_change_kind": "✏️ Cambiar «Tipo»",
+        "confirm_change_duration": "✏️ Cambiar «Duración»",
+        "confirm_change_severity": "✏️ Cambiar «Intensidad»",
         "plan_header": "Tu plan para 24–48 h:",
         "plan_accept": "¿Lo intentas hoy?",
         "accept_opts": ["✅ Sí", "🔁 Más tarde", "✖️ No"],
@@ -293,6 +390,18 @@ T = {
         "fb_like": "👍 Útil",
         "fb_dislike": "👎 No ayudó",
         "fb_write": "✍️ Escribir comentario",
+        "ans_yes": "Sí",
+        "ans_no": "No",
+        "ans_maybe": "No sé",
+        "zone_head_q1": "¿De repente, como un trueno, o la peor de tu vida?",
+        "zone_head_q2": "¿Problemas de habla/visión o debilidad?",
+        "zone_head_q3": "¿Rigidez de cuello o fiebre?",
+        "zone_back_q1": "¿Entumecimiento en la ingle o pérdida de control de orina/defecación?",
+        "zone_back_q2": "¿Trauma reciente, fiebre, cáncer o esteroides?",
+        "zone_back_q3": "¿Irradia por debajo de la rodilla?",
+        "zone_belly_q1": "¿Dónde exactamente: arriba/abajo, derecha/izquierda o centro?",
+        "zone_belly_q2": "¿Relacionado con comida, grasas o alcohol?",
+        "zone_belly_q3": "¿Vómitos/diarrea o sin gases/evacuación? ¿Fiebre/embarazo?",
     },
 }
 def t(lang: str, key: str) -> str:
@@ -513,7 +622,6 @@ TOPIC_KEYS = {
 def main_menu(lang: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup([T[lang]["menu"]], resize_keyboard=True)
 
-# ----- Inline keyboards -----
 def inline_kb_for_step(lang: str, step: int):
     if step == 1:
         labels = T[lang]["triage_pain_q1_opts"]
@@ -546,7 +654,7 @@ def inline_kb_numbers_0_10(prefix: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 def inline_kb_accept_with_feedback(lang: str, eid: str) -> InlineKeyboardMarkup:
-    acc = T[lang]["accept_opts"]  # [Yes, Later, No]
+    acc = T[lang]["accept_opts"]
     rows = [
         [
             InlineKeyboardButton(acc[0], callback_data=f"plan|accept|yes|{eid}"),
@@ -554,15 +662,15 @@ def inline_kb_accept_with_feedback(lang: str, eid: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(acc[2], callback_data=f"plan|accept|no|{eid}"),
         ],
         [
-            InlineKeyboardButton(t(lang, "fb_like"), callback_data=f"fb|like|plan|{eid}"),
-            InlineKeyboardButton(t(lang, "fb_dislike"), callback_data=f"fb|dislike|plan|{eid}"),
-            InlineKeyboardButton(t(lang, "fb_write"), callback_data=f"fb|write|plan|{eid}"),
+            InlineKeyboardButton(t(lang,"fb_like"), callback_data=f"fb|like|plan|{eid}"),
+            InlineKeyboardButton(t(lang,"fb_dislike"), callback_data=f"fb|dislike|plan|{eid}"),
+            InlineKeyboardButton(t(lang,"fb_write"), callback_data=f"fb|write|plan|{eid}"),
         ]
     ]
     return InlineKeyboardMarkup(rows)
 
 def inline_kb_remind(lang: str, eid: str) -> InlineKeyboardMarkup:
-    opts = T[lang]["remind_opts"]  # ["in 4h","this evening","tomorrow morning","no need"]
+    opts = T[lang]["remind_opts"]
     rows = [
         [
             InlineKeyboardButton(opts[0], callback_data=f"plan|remind|4h|{eid}"),
@@ -575,6 +683,30 @@ def inline_kb_remind(lang: str, eid: str) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(rows)
 
+def inline_kb_confirm(lang: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(t(lang,"confirm_ok"), callback_data="confirm|ok")],
+        [
+            InlineKeyboardButton(t(lang,"confirm_change_loc"), callback_data="confirm|change|loc"),
+            InlineKeyboardButton(t(lang,"confirm_change_kind"), callback_data="confirm|change|kind"),
+        ],
+        [
+            InlineKeyboardButton(t(lang,"confirm_change_duration"), callback_data="confirm|change|duration"),
+            InlineKeyboardButton(t(lang,"confirm_change_severity"), callback_data="confirm|change|severity"),
+        ],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+def inline_kb_zone(lang: str, zone_key: str, idx: int) -> InlineKeyboardMarkup:
+    y = t(lang, "ans_yes"); n = t(lang, "ans_no"); m = t(lang, "ans_maybe")
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(y, callback_data=f"zone|{zone_key}|{idx}|yes"),
+            InlineKeyboardButton(n, callback_data=f"zone|{zone_key}|{idx}|no"),
+            InlineKeyboardButton(m, callback_data=f"zone|{zone_key}|{idx}|maybe"),
+        ]
+    ])
+
 async def send_step_question(message, lang: str, step: int):
     key = {1: "triage_pain_q1", 2: "triage_pain_q2", 3: "triage_pain_q3", 4: "triage_pain_q4", 5: "triage_pain_q5"}[step]
     if step in {1, 2, 3, 5}:
@@ -583,42 +715,138 @@ async def send_step_question(message, lang: str, step: int):
         await message.reply_text(t(lang, key), reply_markup=inline_kb_numbers_0_10("pain|sev"))
 
 # =========================
-# Plan builder
+# Plans / Hypotheses (простые правила)
 # =========================
-def pain_plan(lang: str, red_flags_selected: list[str]) -> list[str]:
-    if any(s for s in red_flags_selected if s and s.lower() not in ["none", "нет", "немає", "ninguno"]):
+def build_hypotheses(lang: str, ans: dict, zone: dict) -> list[tuple[str, float, str]]:
+    """
+    Возвращает список гипотез (name, score, because)
+    Простые эвристики по зоне.
+    """
+    loc = (ans.get("loc") or "").lower()
+    kind = (ans.get("kind") or "").lower()
+    duration = (ans.get("duration") or "").lower()
+    sev = int(ans.get("severity", 5))
+    zq = zone.get("q", {}) if zone else {}
+    H = []
+
+    def add(name, score, because):
+        H.append((name, float(score), because))
+
+    # Head
+    if "head" in loc or "голова" in loc or "cabeza" in loc:
+        # migraine
+        if "throbb" in kind or "пульс" in kind:
+            add("Migraine-like", 0.7 + 0.05*(sev>=6), "Throbbing + moderate/severe")
+        # tension
+        if "press" in kind or "tight" in kind or "дав" in kind:
+            add("Tension-type", 0.6, "Pressing/tight character")
+        # sinus
+        if "3–24" in duration or ">1 day" in duration or ">1 дня" in duration:
+            add("Tension/sinus", 0.4, "Lasts many hours")
+
+        # zone answers
+        if zq.get(1) == "yes":  # thunderclap
+            add("Urgent risk pattern", 1.0, "Sudden worst-ever → escalate")
+        if zq.get(2) == "yes":  # neuro
+            add("Neurologic red flag", 1.0, "Speech/vision/weakness → escalate")
+        if zq.get(3) == "yes":  # neck stiffness/fever
+            add("Infection/meningeal concern", 0.9, "Neck stiffness/fever")
+
+    # Back
+    if "back" in loc or "спина" in loc or "espalda" in loc:
+        if "shoot" in kind or "прострел" in kind or zq.get(3) == "yes":
+            add("Radicular pain (sciatica-like)", 0.7, "Shooting below knee/‘прострел’")
+        else:
+            add("Mechanical low back pain", 0.6, "Typical pattern without red flags")
+        if zq.get(1) == "yes" or zq.get(2) == "yes":
+            add("Serious back red flag", 0.95, "Perineal numbness/retention or trauma/fever/cancer")
+
+    # Belly
+    if "belly" in loc or "живот" in loc or "abdomen" in loc or "vientre" in loc or "stomach" in loc:
+        if "vomit" in (ans.get("red","") or "").lower():
+            add("Gastroenteritis-like", 0.6, "Nausea/vomiting")
+        add("Dyspepsia/gastritis-like", 0.5, "Common benign causes if no red flags")
+
+    # Chest
+    if "chest" in loc or "груд" in loc or "pecho" in loc:
+        if zq.get(1) == "yes":
+            add("Possible cardiac pattern", 1.0, "Pressure >10min + dyspnea/sweat")
+        elif zq.get(2) == "yes":
+            add("Pleuritic/musculoskeletal", 0.7, "Worse with breathing/movement/press")
+        elif zq.get(3) == "yes":
+            add("Respiratory infection", 0.6, "Cough/fever")
+
+    # Throat
+    if "throat" in loc or "горло" in loc or "garganta" in loc:
+        if zq.get(1) == "yes" and zq.get(2) == "no":
+            add("Probable bacterial pharyngitis", 0.6, "Fever + exudate, no cough")
+        else:
+            add("Viral sore throat", 0.6, "Common viral pattern")
+
+    # Normalize & sort
+    H.sort(key=lambda x: x[1], reverse=True)
+    return H[:3]
+
+def pain_plan(lang: str, ans: dict, zone: dict, hypotheses: list[tuple[str,float,str]]) -> list[str]:
+    red = (ans.get("red") or "").lower()
+    # срочная эскалация при явных триггерах
+    urgent = any(s in red for s in ["fever", "vomit", "weakness", "speech", "vision", "травм", "trauma"]) and (ans.get("severity", 0) >= 7)
+    # также по гипотезам
+    for name, score, because in hypotheses:
+        if "Urgent" in name or "cardiac" in name or "Neurologic" in name or "red flag" in name:
+            urgent = True
+    if urgent:
         return {
-            "ru": ["⚠️ Есть тревожные признаки. Пожалуйста, как можно скорее оценитесь у врача/в неотложке."],
-            "uk": ["⚠️ Є тривожні ознаки. Будь ласка, якнайшвидше зверніться до лікаря/невідкладної."],
-            "en": ["⚠️ Red flags present. Please consider urgent medical evaluation."],
-            "es": ["⚠️ Señales de alarma presentes. Considera una evaluación médica urgente."],
+            "ru": ["⚠️ Есть признаки возможной угрозы. Пожалуйста, как можно скорее обратитесь за медицинской помощью."],
+            "uk": ["⚠️ Є ознаки можливої загрози. Будь ласка, якнайшвидше зверніться по медичну допомогу."],
+            "en": ["⚠️ Some answers suggest urgent risks. Please seek medical care as soon as possible."],
+            "es": ["⚠️ Hay señales de posible urgencia. Por favor busca atención médica lo antes posible."],
         }[lang]
+
     base = {
         "ru": [
-            "1) Вода 400–600 мл, 15–20 минут покоя в тихой комнате.",
-            "2) Если нет противопоказаний — ибупрофен 200–400 мг однократно с едой.",
-            "3) Проветрить комнату и уменьшить экран на 30–60 минут.",
+            "1) Вода 400–600 мл и 15–20 минут покоя в тихом месте.",
+            "2) Если нет противопоказаний — ибупрофен 200–400 мг 1 раз с едой.",
+            "3) Проветрить комнату, снизить экраны на 30–60 минут.",
             "Цель: к вечеру боль ≤3/10."
         ],
         "uk": [
-            "1) Вода 400–600 мл, 15–20 хв відпочинку в тихій кімнаті.",
-            "2) Якщо немає протипоказань — ібупрофен 200–400 мг одноразово з їжею.",
-            "3) Провітрити кімнату та зменшити екран на 30–60 хв.",
+            "1) 400–600 мл води та 15–20 хв відпочинку у тихому місці.",
+            "2) Якщо немає протипоказань — ібупрофен 200–400 мг 1 раз із їжею.",
+            "3) Провітрити кімнату, зменшити екрани на 30–60 хв.",
             "Мета: до вечора біль ≤3/10."
         ],
         "en": [
-            "1) Drink 400–600 ml water and rest 15–20 minutes in a quiet room.",
+            "1) Drink 400–600 ml of water and rest 15–20 minutes in a quiet place.",
             "2) If no contraindications — ibuprofen 200–400 mg once with food.",
-            "3) Air the room and reduce screen time 30–60 minutes.",
+            "3) Air the room; reduce screen time for 30–60 minutes.",
             "Target: by evening pain ≤3/10."
         ],
         "es": [
-            "1) Bebe 400–600 ml de agua y descansa 15–20 minutos en un lugar tranquilo.",
+            "1) Bebe 400–600 ml de agua y descansa 15–20 min en un lugar tranquilo.",
             "2) Si no hay contraindicaciones — ibuprofeno 200–400 mg una vez con comida.",
-            "3) Ventila la habitación y reduce pantallas 30–60 minutos.",
+            "3) Ventila la habitación; reduce pantallas 30–60 min.",
             "Objetivo: por la tarde dolor ≤3/10."
         ],
     }
+    # Лёгкая персонализация: если спина → добавить тепло/растяжка; горло → тёплые напитки/полоскание
+    loc = (ans.get("loc") or "").lower()
+    if "back" in loc or "спина" in loc or "espalda" in loc:
+        extra = {
+            "ru": ["4) Тёплый компресс 10–15 мин 2–3 раза/день, мягкая мобилизация/растяжка."],
+            "uk": ["4) Теплий компрес 10–15 хв 2–3 р/день, м’яка мобілізація/розтяжка."],
+            "en": ["4) Warm compress 10–15 min 2–3×/day, gentle mobility/stretching."],
+            "es": ["4) Compresa tibia 10–15 min 2–3×/día, movilidad/estiramientos suaves."],
+        }[lang]
+        return base[lang] + extra
+    if "throat" in loc or "горло" in loc or "garganta" in loc:
+        extra = {
+            "ru": ["4) Тёплое питьё, полоскания солевым раствором 3–4 раза/день."],
+            "uk": ["4) Теплі напої, полоскання сольовим розчином 3–4 р/день."],
+            "en": ["4) Warm fluids; saline gargles 3–4×/day."],
+            "es": ["4) Líquidos tibios; gárgaras salinas 3–4×/día."],
+        }[lang]
+        return base[lang] + extra
     return base[lang]
 
 # =========================
@@ -731,7 +959,6 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user,"language_code",None))
         await update.message.reply_text(t(lang, "skip_ok"))
     else:
-        # если в слот-диалоге: мягко предложим кнопки
         lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user,"language_code",None))
         await update.message.reply_text(t(lang, "use_buttons"))
 
@@ -750,7 +977,7 @@ async def cmd_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
-# Auto language switch
+# Auto language switch & scope filter
 # =========================
 GREET_WORDS = {
     "en": {"hi", "hello", "hey"},
@@ -763,19 +990,16 @@ def maybe_autoswitch_lang(uid: int, text: str, cur_lang: str) -> str:
     if not text or text.startswith("/"):
         return cur_lang
     tl = text.strip().lower()
-    # приветствия
     for lang_code, words in GREET_WORDS.items():
         if tl in words:
             if lang_code != cur_lang:
                 users_set(uid, "lang", lang_code)
             return lang_code
-    # эвристика по алфавиту
     has_lat = bool(re.search(r"[A-Za-z]", text))
     has_cyr = bool(re.search(r"[А-Яа-яЁёІіЇїЄє]", text))
     if has_lat and not has_cyr and cur_lang != "en":
         users_set(uid, "lang", "en")
         return "en"
-    # langdetect
     if detect:
         try:
             cand = norm_lang(detect(text))
@@ -786,9 +1010,6 @@ def maybe_autoswitch_lang(uid: int, text: str, cur_lang: str) -> str:
             pass
     return cur_lang
 
-# =========================
-# Care-topic whitelist
-# =========================
 CARE_KEYWORDS = {
     "en": {
         "pain","headache","throat","cough","cold","fever","back","belly","stomach","chest",
@@ -811,7 +1032,6 @@ CARE_KEYWORDS = {
         "náusea","vómito","síntoma","salud","ibuprofeno"
     },
 }
-
 def is_care_related(lang: str, text: str) -> bool:
     tl = (text or "").lower()
     words = CARE_KEYWORDS.get(lang, CARE_KEYWORDS["en"])
@@ -877,6 +1097,59 @@ def normalize_llm_slots(data: dict, lang: str) -> dict:
     return slots
 
 # =========================
+# Topic detection
+# =========================
+def detect_or_choose_topic(lang: str, text: str) -> str | None:
+    tl = text.lower().strip()
+    if any(w in tl for w in ["болит","боль","hurt","pain","dolor","болю"]): return "pain"
+    if any(w in tl for w in ["горло","throat","garganta","простуд","cold"]): return "throat"
+    if any(w in tl for w in ["сон","sleep","sueñ"]): return "sleep"
+    if any(w in tl for w in ["стресс","stress","estrés"]): return "stress"
+    if any(w in tl for w in ["живот","желуд","живіт","стул","понос","диар","digest","estómago","barriga","abdomen"]): return "digestion"
+    if any(w in tl for w in ["энерг","енерг","energy","fatigue","слабость","energía","cansancio"]): return "energy"
+    for label, key in TOPIC_KEYS.get(lang, TOPIC_KEYS["en"]).items():
+        if text.strip() == label: return key
+    return None
+
+# =========================
+# FLOW HELPERS
+# =========================
+def next_missing_step(ans: dict) -> int:
+    if "loc" not in ans: return 1
+    if "kind" not in ans: return 2
+    if "duration" not in ans: return 3
+    if "severity" not in ans: return 4
+    if "red" not in ans: return 5
+    return 0  # all present
+
+def render_confirm(lang: str, ans: dict) -> str:
+    def val(k, default="—"):
+        v = ans.get(k)
+        return str(v) if v not in [None, ""] else default
+    parts = [
+        t(lang, "confirm_title"),
+        t(lang, "confirm_loc").format(loc=val("loc","—")),
+        t(lang, "confirm_kind").format(kind=val("kind","—")),
+        t(lang, "confirm_duration").format(duration=val("duration","—")),
+        t(lang, "confirm_severity").format(severity=val("severity","—")),
+    ]
+    return "\n".join(parts)
+
+def zone_key_from_loc(ans_loc: str) -> str:
+    if not ans_loc: return "general"
+    tl = ans_loc.lower()
+    if "head" in tl or "голов" in tl or "cabeza" in tl: return "head"
+    if "back" in tl or "спина" in tl or "espalda" in tl or "пояс" in tl: return "back"
+    if "belly" in tl or "жив" in tl or "abdomen" in tl or "stomach" in tl or "vientre" in tl: return "belly"
+    if "chest" in tl or "груд" in tl or "pecho" in tl: return "chest"
+    if "throat" in tl or "горло" in tl or "garganta" in tl: return "throat"
+    return "general"
+
+def zone_question_text(lang: str, zone_key: str, idx: int) -> str:
+    key = f"zone_{zone_key}_q{idx}"
+    return t(lang, key)
+
+# =========================
 # Callback handler
 # =========================
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -885,6 +1158,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data or ""
     uid = q.from_user.id
     lang = norm_lang(users_get(uid).get("lang") or getattr(q.from_user,"language_code",None))
+    s = sessions.setdefault(uid, {})
 
     if data.startswith("consent|"):
         users_set(uid, "consent", "yes" if data.endswith("|yes") else "no")
@@ -895,7 +1169,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(t(lang, "thanks"))
         return
 
-    # ---- Feedback (like/dislike/write) ----
+    # Feedback
     if data.startswith("fb|"):
         _, action, context_name, eid = (data.split("|") + ["","","",""])[:4]
         name = context_name or "general"
@@ -910,17 +1184,43 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ws_feedback.append_row([datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), str(uid), name, q.from_user.username or "", rating, comment])
             await q.message.reply_text(t(lang, "fb_thanks"))
         elif action == "write":
-            sess = sessions.setdefault(uid, {})
-            sess["awaiting_comment"] = True
-            sess["feedback_context"] = name
+            s["awaiting_comment"] = True
+            s["feedback_context"] = name
             await q.message.reply_text(t(lang, "comment_prompt"))
         try:
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
+        sessions[uid] = s
         return
 
-    # ---- Pain inline selections ----
+    # Confirm flow
+    if data.startswith("confirm|"):
+        parts = data.split("|")
+        if parts[1] == "ok":
+            # move to red flags
+            s["flow"] = "redflags"
+            sessions[uid] = s
+            await q.message.reply_text(t(lang, "triage_pain_q5"), reply_markup=inline_kb_for_step(lang, 5))
+            try:
+                await q.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+        elif parts[1] == "change":
+            field = parts[2] if len(parts) > 2 else ""
+            # ask specific step
+            if field == "loc":
+                await q.message.reply_text(t(lang,"triage_pain_q1"), reply_markup=inline_kb_for_step(lang,1))
+            elif field == "kind":
+                await q.message.reply_text(t(lang,"triage_pain_q2"), reply_markup=inline_kb_for_step(lang,2))
+            elif field == "duration":
+                await q.message.reply_text(t(lang,"triage_pain_q3"), reply_markup=inline_kb_for_step(lang,3))
+            elif field == "severity":
+                await q.message.reply_text(t(lang,"triage_pain_q4"), reply_markup=inline_kb_numbers_0_10("pain|sev"))
+            return
+
+    # Pain inline selections (loc/kind/duration/red)
     if data.startswith("pain|s|"):
         try:
             _, _, step_str, idx_str = data.split("|")
@@ -928,10 +1228,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             idx = int(idx_str)
         except Exception:
             return
-
-        s = sessions.setdefault(uid, {"topic": "pain", "step": 1, "answers": {}})
         ans = s.setdefault("answers", {})
-
         labels_map = {
             1: T[lang]["triage_pain_q1_opts"],
             2: T[lang]["triage_pain_q2_opts"],
@@ -945,59 +1242,65 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if step == 1:
             ans["loc"] = label
+            # after picking loc during confirm-change → re-render confirm
+            if s.get("flow") in {"confirm","collect"}:
+                text = render_confirm(lang, ans)
+                await q.message.reply_text(text, reply_markup=inline_kb_confirm(lang))
         elif step == 2:
             ans["kind"] = label
+            if s.get("flow") in {"confirm","collect"}:
+                text = render_confirm(lang, ans)
+                await q.message.reply_text(text, reply_markup=inline_kb_confirm(lang))
         elif step == 3:
             ans["duration"] = label
+            if s.get("flow") in {"confirm","collect"}:
+                text = render_confirm(lang, ans)
+                await q.message.reply_text(text, reply_markup=inline_kb_confirm(lang))
         elif step == 5:
             ans["red"] = label
+            # after red flags → zone or escalate
+            s["flow"] = "zone"
+            # If red flag present and not "None" → still proceed to zone but plan may escalate later
+            zname = zone_key_from_loc(ans.get("loc",""))
+            s["zone"] = {"name": zname, "idx": 1, "q": {}}
+            # ask zone q1 if exists, else skip to plan
+            if zname != "general":
+                txt = zone_question_text(lang, zname, 1)
+                await q.message.reply_text(txt, reply_markup=inline_kb_zone(lang, zname, 1))
+            else:
+                # no specific zone → go plan directly
+                hyps = build_hypotheses(lang, ans, s.get("zone", {}))
+                eid = s.get("episode_id")
+                if not eid:
+                    eid = episode_create(uid, "pain", int(ans.get("severity",5)), ans.get("red","None"))
+                    s["episode_id"] = eid
+                plan_lines = pain_plan(lang, ans, s.get("zone", {}), hyps)
+                await q.message.reply_text(f"{t(lang,'plan_header')}\n" + "\n".join(plan_lines))
+                await q.message.reply_text(t(lang,"plan_accept"), reply_markup=inline_kb_accept_with_feedback(lang, eid))
+                s["flow"] = "accept_wait"
 
-        s["answers"] = ans
-
-        q_key = {1: "triage_pain_q1", 2: "triage_pain_q2", 3: "triage_pain_q3", 5: "triage_pain_q5"}[step]
-        try:
-            await q.edit_message_text(f"{t(lang, q_key)}\n• {label} ✅")
-        except Exception:
-            try:
-                await q.edit_message_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-
-        def _next_missing_step_local(ans_local: dict) -> int:
-            if "loc" not in ans_local: return 1
-            if "kind" not in ans_local: return 2
-            if "duration" not in ans_local: return 3
-            if "severity" not in ans_local: return 4
-            if "red" not in ans_local: return 5
-            return 6
-
-        next_step = _next_missing_step_local(ans)
-        s["step"] = next_step
         sessions[uid] = s
-
-        if next_step <= 5:
-            await send_step_question(q.message, lang, next_step)
-        else:
-            sev = int(ans.get("severity", 5))
-            red = ans.get("red", "None")
-            eid = episode_create(uid, "pain", sev, red)
-            s["episode_id"] = eid
-            plan_lines = pain_plan(lang, [red])
-            await q.message.reply_text(f"{t(lang,'plan_header')}\n" + "\n".join(plan_lines))
-            await q.message.reply_text(t(lang,"plan_accept"), reply_markup=inline_kb_accept_with_feedback(lang, eid))
-            s["awaiting_accept"] = True
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         return
 
     if data.startswith("pain|sev|"):
         n = int(data.split("|")[-1])
-        s = sessions.setdefault(uid, {"topic": "pain", "step": 4, "answers": {}})
-        s.setdefault("answers", {})["severity"] = n
+        ans = s.setdefault("answers", {})
+        ans["severity"] = n
         sessions[uid] = s
         try:
             await q.edit_message_text(f"{t(lang, 'triage_pain_q4')}\n• {n} ✅")
         except Exception:
             pass
-        await send_step_question(q.message, lang, 5)
+        # If we are in confirm/collect → re-render confirm; else if we were asking sev during flow, continue
+        if s.get("flow") in {"confirm","collect"}:
+            text = render_confirm(lang, ans)
+            await q.message.reply_text(text, reply_markup=inline_kb_confirm(lang))
+        else:
+            await send_step_question(q.message, lang, 5)
         return
 
     if data.startswith("checkin|sev|"):
@@ -1030,23 +1333,61 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # ---- Plan acceptance & remind ----
+    # Zone questions
+    if data.startswith("zone|"):
+        _, zname, idx_str, answ = data.split("|")
+        idx = int(idx_str)
+        zone = s.setdefault("zone", {"name": zname, "idx": 1, "q": {}})
+        zone["name"] = zname
+        zone["q"][idx] = answ
+        sessions[uid] = s
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        if idx < 3:
+            nxt = idx + 1
+            txt = zone_question_text(lang, zname, nxt)
+            await q.message.reply_text(txt, reply_markup=inline_kb_zone(lang, zname, nxt))
+            zone["idx"] = nxt
+            sessions[uid] = s
+            return
+        else:
+            # compute hypotheses + plan
+            ans = s.setdefault("answers", {})
+            hyps = build_hypotheses(lang, ans, zone)
+            # show quick hypotheses with because
+            if hyps:
+                lines = []
+                for name, score, because in hyps:
+                    lines.append(f"• {name} ({int(score*100)}%) — {because}")
+                await q.message.reply_text("\n".join(lines))
+            eid = s.get("episode_id")
+            if not eid:
+                eid = episode_create(uid, "pain", int(ans.get("severity",5)), ans.get("red","None"))
+                s["episode_id"] = eid
+            plan_lines = pain_plan(lang, ans, zone, hyps)
+            await q.message.reply_text(f"{t(lang,'plan_header')}\n" + "\n".join(plan_lines))
+            await q.message.reply_text(t(lang,"plan_accept"), reply_markup=inline_kb_accept_with_feedback(lang, eid))
+            s["flow"] = "accept_wait"
+            sessions[uid] = s
+            return
+
+    # Plan acceptance & remind
     if data.startswith("plan|accept|"):
         _, _, choice, eid = data.split("|")
-        s = sessions.setdefault(uid, {})
         if choice == "yes":
             episode_set(eid, "plan_accepted", "1")
-            s["awaiting_accept"] = False
-            s["awaiting_remind"] = True
+            s["flow"] = "remind_wait"
             await q.message.reply_text(t(lang, "remind_when"), reply_markup=inline_kb_remind(lang, eid))
         elif choice == "later":
             episode_set(eid, "plan_accepted", "later")
-            s["awaiting_accept"] = False
-            s["awaiting_remind"] = True
+            s["flow"] = "remind_wait"
             await q.message.reply_text(t(lang, "remind_when"), reply_markup=inline_kb_remind(lang, eid))
         else:
             episode_set(eid, "plan_accepted", "0")
-            s["awaiting_accept"] = False
+            s["flow"] = "plan"
             await q.message.reply_text(t(lang, "thanks"), reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(t(lang,"fb_like"), callback_data="fb|like|plan|"+eid),
                  InlineKeyboardButton(t(lang,"fb_dislike"), callback_data="fb|dislike|plan|"+eid),
@@ -1061,7 +1402,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("plan|remind|"):
         _, _, code, eid = data.split("|")
-        # рассчитать дату напоминания
         urec = users_get(uid)
         tz_off = 0
         try:
@@ -1084,10 +1424,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_user = None
 
         if target_user:
-            # вернём в UTC
             target_utc = target_user - timedelta(hours=tz_off)
             episode_set(eid, "next_checkin_at", iso(target_utc))
-            # запланировать
             delay = (target_utc - now_utc).total_seconds()
             if delay < 60: delay = 60
             context.job_queue.run_once(job_checkin, when=delay, data={"user_id": uid, "episode_id": eid})
@@ -1096,94 +1434,46 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
-        s = sessions.setdefault(uid, {})
-        s["awaiting_remind"] = False
+        s["flow"] = "plan"
         sessions[uid] = s
         return
 
 # =========================
-# Scenario: Pain with slots
+# Triaging: start/collect/confirm
 # =========================
-def _next_missing_step(ans: dict) -> int:
-    if "loc" not in ans: return 1
-    if "kind" not in ans: return 2
-    if "duration" not in ans: return 3
-    if "severity" not in ans: return 4
-    if "red" not in ans: return 5
-    return 6
+async def start_pain_triage(update: Update, lang: str, uid: int):
+    sessions[uid] = {"topic": "pain", "flow": "collect", "answers": {}}
+    await update.message.reply_text(t(lang, "open_prompt"))
 
-async def _ask_for_step(update: Update, lang: str, step: int):
-    if step in {1, 2, 3, 5}:
-        sent = await update.message.reply_text(
-            t(lang, {1:"triage_pain_q1",2:"triage_pain_q2",3:"triage_pain_q3",5:"triage_pain_q5"}[step]),
-            reply_markup=inline_kb_for_step(lang, step),
-        )
-        sessions.setdefault(update.effective_user.id, {}).update({"last_q_msg_id": sent.message_id})
-    elif step == 4:
-        sent = await update.message.reply_text(t(lang,"triage_pain_q4"), reply_markup=inline_kb_numbers_0_10("pain|sev"))
-        sessions.setdefault(update.effective_user.id, {}).update({"last_q_msg_id": sent.message_id})
+async def proceed_to_confirm(message, lang: str, uid: int):
+    s = sessions.setdefault(uid, {})
+    ans = s.setdefault("answers", {})
+    text = render_confirm(lang, ans)
+    s["flow"] = "confirm"
+    sessions[uid] = s
+    await message.reply_text(text, reply_markup=inline_kb_confirm(lang))
 
-async def start_pain_triage(update: Update, lang: str, uid: int, seed_text: str | None = None, seed_slots: dict | None = None):
-    sessions[uid] = {"topic": "pain", "step": 1, "answers": {}}
-    if seed_text:
-        sessions[uid]["answers"].update(extract_slots(seed_text, lang))
-    if seed_slots:
-        sessions[uid]["answers"].update(seed_slots)
-    step = _next_missing_step(sessions[uid]["answers"])
-    await _ask_for_step(update, lang, step)
-
-async def continue_pain_triage(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str, uid: int, text: str):
-    s = sessions.get(uid, {})
-    ans = s.get("answers", {})
+async def continue_collect(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str, uid: int, text_input: str):
+    s = sessions.setdefault(uid, {"topic": "pain", "flow": "collect", "answers": {}})
+    ans = s.setdefault("answers", {})
 
     # LLM-гибрид
-    llm_data = parse_with_llm(text, lang)
+    llm_data = parse_with_llm(text_input, lang)
     if llm_data and llm_data.get("confidence", 0) >= 0.5:
         ans.update(normalize_llm_slots(llm_data, lang))
 
     # Правила
-    slots = extract_slots(text, lang)
+    slots = extract_slots(text_input, lang)
     for k, v in slots.items():
         ans.setdefault(k, v)
 
-    # Дальше — только кнопки. Если чего-то не хватает — спрашиваем тот шаг.
-    step = _next_missing_step(ans)
-    if step <= 5:
-        s["answers"] = ans
-        sessions[uid] = s
-        await _ask_for_step(update, lang, step)
+    # Если совсем пусто — попросим примеры ещё раз
+    if not ans:
+        await update.message.reply_text(t(lang, "open_prompt"))
         return
 
-    # План (однократно)
-    if not s.get("episode_id"):
-        sev = int(ans.get("severity", 5))
-        red = ans.get("red", "None")
-        eid = episode_create(uid, "pain", sev, red)
-        s["episode_id"] = eid
-        plan_lines = pain_plan(lang, [red])
-        await update.message.reply_text(f"{t(lang,'plan_header')}\n" + "\n".join(plan_lines))
-        await update.message.reply_text(t(lang,"plan_accept"), reply_markup=inline_kb_accept_with_feedback(lang, eid))
-        s["awaiting_accept"] = True
-        s["answers"] = ans
-        sessions[uid] = s
-    else:
-        # План уже показан — просим жать кнопки, а не печатать
-        await update.message.reply_text(t(lang, "use_buttons"))
-
-# =========================
-# Topic detection
-# =========================
-def detect_or_choose_topic(lang: str, text: str) -> str | None:
-    tl = text.lower().strip()
-    if any(w in tl for w in ["болит","боль","hurt","pain","dolor","болю"]): return "pain"
-    if any(w in tl for w in ["горло","throat","garganta","простуд","cold"]): return "throat"
-    if any(w in tl for w in ["сон","sleep","sueñ"]): return "sleep"
-    if any(w in tl for w in ["стресс","stress","estrés"]): return "stress"
-    if any(w in tl for w in ["живот","желуд","живіт","стул","понос","диар","digest","estómago","barriga","abdomen"]): return "digestion"
-    if any(w in tl for w in ["энерг","енерг","energy","fatigue","слабость","energía","cansancio"]): return "energy"
-    for label, key in TOPIC_KEYS.get(lang, TOPIC_KEYS["en"]).items():
-        if text.strip() == label: return key
-    return None
+    sessions[uid] = s
+    await proceed_to_confirm(update.message, lang, uid)
 
 # =========================
 # Text handlers
@@ -1224,32 +1514,35 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(lang, "welcome"), reply_markup=main_menu(lang))
         return
 
-    # если уже в pain-потоке
-    if s.get("topic") == "pain":
-        # если ждём выбор по плану/напоминанию — просим жать кнопки
-        if s.get("awaiting_accept") or s.get("awaiting_remind"):
-            await update.message.reply_text(t(lang, "use_buttons"))
-            return
-        await continue_pain_triage(update, context, lang, uid, text)
-        return
-
     # оффтоп?
     if not is_care_related(lang, text):
         await update.message.reply_text(t(lang, "oos"), reply_markup=main_menu(lang))
         return
 
-    # распознать тему
-    topic = detect_or_choose_topic(lang, text)
+    # ACTIVE FLOW
+    if s and s.get("topic") == "pain":
+        flow = s.get("flow") or "collect"
+        if flow == "collect":
+            await continue_collect(update, context, lang, uid, text)
+            return
+        elif flow in {"confirm"}:
+            # Если человек пишет текст вместо кнопок — пытаемся обновить слоты и снова показать confirm
+            await continue_collect(update, context, lang, uid, text)
+            return
+        elif flow in {"redflags","zone","accept_wait","remind_wait"}:
+            await update.message.reply_text(t(lang, "use_buttons"))
+            return
 
-    # гибридный парсинг
-    llm_data = parse_with_llm(text, lang)
-    seed_slots = normalize_llm_slots(llm_data, lang) if llm_data.get("confidence", 0) >= 0.5 else {}
-
-    if topic in {"pain","throat","sleep","stress","digestion","energy"} or seed_slots:
-        await start_pain_triage(update, lang, uid, seed_text=text, seed_slots=seed_slots)
+    # новая тема → триаж
+    topic = detect_or_choose_topic(lang, text) or "pain"
+    if topic in {"pain","throat","sleep","stress","digestion","energy"}:
+        await start_pain_triage(update, lang, uid)
+        # сразу попытаемся понять из текста, если он не пустой
+        if text:
+            await continue_collect(update, context, lang, uid, text)
         return
 
-    # фолбэк: коротко уточнить
+    # фолбэк
     await update.message.reply_text(t(lang, "unknown"), reply_markup=main_menu(lang))
 
 # =========================
