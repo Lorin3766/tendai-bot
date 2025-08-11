@@ -1,16 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 TendAI — чат-первый ассистент здоровья и долголетия
-
-Что внутри:
-— Сразу при первом сообщении: предложение пройти мини-опрос (6 вопросов, ~40 сек)
-  с кнопками «Да, начать» / «Нет, позже». Опрос можно запустить в любой момент (/intake).
-— Возраст вводится числом, остальные вопросы — инлайн-кнопками.
-— Живой диалог: каждое сообщение проходит через LLM (модель из OPENAI_MODEL).
-— Красные флаги не блокируются опросом: если они в тексте, даём подсказку сразу.
-— Отзывы (👍/👎 и комментарии) пишутся в лист Feedback.
-— Эпизоды, напоминания, чек-ины — в лист Episodes.
-— Никаких нижних клавиатур; только инлайн-кнопки в самом диалоге.
+Динамический язык: бот отвечает на языке КАЖДОГО текущего сообщения (ru/en/uk/es).
 """
 
 import os, re, json, uuid, logging, hashlib, time
@@ -51,7 +42,7 @@ logging.basicConfig(
 
 TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # укажи gpt-5, если доступен
+OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # поставь свой (GPT-5 Thinking), если доступен
 SHEET_NAME      = os.getenv("SHEET_NAME", "TendAI Feedback")
 
 if not TELEGRAM_TOKEN:
@@ -101,7 +92,8 @@ ws_intake   = _get_or_create_ws("Intake",   ["timestamp","user_id","username","l
 #   "last_advice_hash": str,
 #   "last_feedback_prompt_ts": float,
 #   "intake": {"q":1..6, "ans":{}},
-#   "intake_offered": bool
+#   "intake_offered": bool,
+#   "last_lang": "ru|en|uk|es"
 # }
 sessions: dict[int, dict] = {}
 
@@ -129,7 +121,6 @@ T = {
         "remind_ok":"Принято 🙌",
         "feedback_hint":"Если было полезно — можно отправить 👍 или 👎, и при желании написать короткий отзыв.",
         "deleted":"✅ Данные удалены. /start — начать заново.",
-        # Intake (offer + Q1..Q6)
         "intake_offer":"Чтобы дать более точный и персональный ответ, заполните короткий опрос (6 вопросов, ~40 сек). Начать сейчас?",
         "intake_yes":"Да, начать",
         "intake_no":"Нет, позже",
@@ -224,6 +215,48 @@ T = {
 }
 def t(lang: str, key: str) -> str:
     return T.get(lang, T["en"]).get(key, T["en"].get(key, key))
+
+# =========================
+# Динамическое определение языка
+# =========================
+CYR = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґ]")
+UK_MARKERS = set("іїєґІЇЄҐ")
+ES_MARKERS = set("ñÑ¡¿áéíóúÁÉÍÓÚ")
+
+def guess_lang_heuristic(text: str) -> str | None:
+    if not text: return None
+    # явные маркеры испанского
+    if any(ch in ES_MARKERS for ch in text):
+        return "es"
+    tl = text.lower()
+    if any(w in tl for w in ["hola","buenas","gracias","por favor","mañana","ayer","dolor","tengo"]):
+        return "es"
+    # кириллица → ru/uk
+    if CYR.search(text):
+        if any(ch in UK_MARKERS for ch in text):
+            return "uk"
+        # простая эвристика
+        if any(w in tl for w in ["привіт","будь ласка","дякую","болить"]):
+            return "uk"
+        return "ru"
+    return None
+
+def detect_lang_per_message(text: str, profile_lang: str = "en") -> str:
+    # 1) сильная эвристика
+    h = guess_lang_heuristic(text)
+    if h: return h
+    # 2) langdetect (если есть)
+    if detect:
+        try:
+            return norm_lang(detect(text))
+        except Exception:
+            pass
+    # 3) слова-признаки для en
+    tl = (text or "").lower()
+    if any(w in tl for w in ["hello","hi","i have","pain","headache","throat","back"]):
+        return "en"
+    # 4) дефолт
+    return norm_lang(profile_lang)
 
 # =========================
 # Intake options & keyboards
@@ -408,7 +441,7 @@ def llm_chat(uid: int, lang: str, user_text: str) -> dict:
         hist.append({"role":"user","content":user_text[:1000]})
         if a: hist.append({"role":"assistant","content":a[:1000]})
         sessions[uid]["chat_history"] = hist[-14:]
-        logging.info(f"LLM ok | next_action={data.get('next_action')}")
+        logging.info(f"LLM ok | next_action={data.get('next_action')} | lang={lang}")
         return data
     except Exception as e:
         logging.warning(f"LLM error: {e}")
@@ -424,18 +457,6 @@ URGENT_PATTERNS = [
     r"высок(ая|ая) темп", r"температур[аи] 39", r"chest pain", r"short(ness)? of breath", r"one-?sided weakness",
     r"high fever", r"dolor en el pecho", r"dificultad para respirar", r"fiebre alta"
 ]
-
-def maybe_autoswitch_lang(uid: int, text: str, cur_lang: str) -> str:
-    if not text: return cur_lang
-    if detect:
-        try:
-            cand = norm_lang(detect(text))
-            if cand in SUPPORTED and cand != cur_lang:
-                users_set(uid, "lang", cand)
-                return cand
-        except Exception:
-            pass
-    return cur_lang
 
 def urgent_from_text(text: str) -> bool:
     tl = (text or "").lower()
@@ -488,7 +509,7 @@ async def job_checkin(context: ContextTypes.DEFAULT_TYPE):
     if not uid or not eid: return
     u = users_get(uid)
     if (u.get("paused") or "").lower() == "yes": return
-    lang = u.get("lang") or "en"
+    lang = sessions.get(uid, {}).get("last_lang") or u.get("lang") or "en"
     try:
         await context.bot.send_message(uid, T[lang]["checkin_prompt"])
         s = sessions.setdefault(uid, {})
@@ -523,31 +544,29 @@ async def on_startup(app):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
-    lang = users_get(uid).get("lang")
-    if not lang:
-        txt = (update.message.text or "").strip() if update.message else ""
-        cand = None
-        if detect:
-            try: cand = detect(txt) if txt else None
-            except Exception: cand = None
-        lang = norm_lang(cand or getattr(user,"language_code",None))
+    # дефолтный язык — профиль Телеграм (для первого приветствия)
+    lang = users_get(uid).get("lang") or norm_lang(getattr(user,"language_code",None))
+    if not users_get(uid):
         users_upsert(uid, user.username or "", lang)
 
-    # Спрячем старую нижнюю клавиатуру и покажем привет
-    await update.message.reply_text(f"{T[lang]['welcome']}\n{T[lang]['help']}", reply_markup=ReplyKeyboardRemove())
+    # Привет + спрятать нижнюю клавиатуру
+    await update.message.reply_text(f"{t(lang,'welcome')}\n{t(lang,'help')}", reply_markup=ReplyKeyboardRemove())
 
-    # ВСЕГДА предложим мини-опрос (не блокируя чат)
+    # Сессия
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
     s["intake_offered"] = True
-    await update.message.reply_text(T[lang]["intake_offer"], reply_markup=kb_intake_offer(lang))
+    s["last_lang"] = lang
+    await update.message.reply_text(t(lang,"intake_offer"), reply_markup=kb_intake_offer(lang))
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = norm_lang(users_get(update.effective_user.id).get("lang") or getattr(update.effective_user,"language_code",None))
-    await update.message.reply_text(T[lang]["help"])
+    uid = update.effective_user.id
+    base = users_get(uid).get("lang") or norm_lang(getattr(update.effective_user,"language_code",None))
+    await update.message.reply_text(t(base,"help"))
 
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = norm_lang(users_get(update.effective_user.id).get("lang") or getattr(update.effective_user,"language_code",None))
-    await update.message.reply_text(T[lang]["privacy"])
+    uid = update.effective_user.id
+    base = users_get(uid).get("lang") or norm_lang(getattr(update.effective_user,"language_code",None))
+    await update.message.reply_text(t(base,"privacy"))
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id; users_set(uid,"paused","yes"); await update.message.reply_text("⏸️ Paused.")
@@ -564,7 +583,8 @@ async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ws_eps.cell(i,2).value == str(uid): to_del.append(i)
     for j, row_i in enumerate(to_del):
         ws_eps.delete_rows(row_i - j)
-    await update.message.reply_text(T[norm_lang(getattr(update.effective_user,"language_code",None))]["deleted"], reply_markup=ReplyKeyboardRemove())
+    base = norm_lang(getattr(update.effective_user,"language_code",None))
+    await update.message.reply_text(t(base,"deleted"), reply_markup=ReplyKeyboardRemove())
 
 async def cmd_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -584,10 +604,11 @@ async def cmd_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user,"language_code",None))
+    # язык берём из ПОСЛЕДНЕГО сообщения, либо базовый
+    base = sessions.get(uid, {}).get("last_lang") or users_get(uid).get("lang") or norm_lang(getattr(update.effective_user,"language_code",None))
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
     s["mode"]="intake"; s["intake"]={"q":1, "ans":{}}
-    await update.message.reply_text(T[lang]["intake_q1_age"], reply_markup=kb_intake_skip(lang))
+    await update.message.reply_text(t(base,"intake_q1_age"), reply_markup=kb_intake_skip(base))
 
 async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -596,14 +617,14 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ок, пропустили.")
 
 # =========================
-# Callback (intake)
+# Callback (intake) — язык берём из last_lang
 # =========================
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    lang = norm_lang(users_get(uid).get("lang") or getattr(q.from_user,"language_code",None))
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
+    lang = s.get("last_lang") or users_get(uid).get("lang") or norm_lang(getattr(q.from_user,"language_code",None))
 
     data = (q.data or "")
     if not data.startswith("intake|"):
@@ -612,7 +633,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = data.split("|")
     if len(parts) >= 2 and parts[1] == "start":
         s["mode"]="intake"; s["intake"]={"q":1,"ans":{}}
-        await q.message.reply_text(T[lang]["intake_q1_age"], reply_markup=kb_intake_skip(lang))
+        await q.message.reply_text(t(lang,"intake_q1_age"), reply_markup=kb_intake_skip(lang))
         return
 
     if len(parts) >= 2 and parts[1] == "skip":
@@ -620,7 +641,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("Ок, можно вернуться к опросу в любой момент: /intake")
         if (users_get(uid).get("consent") or "").lower() not in {"yes","no"}:
             s["mode"]="await_consent"
-            await q.message.reply_text(T[lang]["consent"])
+            await q.message.reply_text(t(lang,"consent"))
         return
 
     if len(parts) == 4 and parts[1] == "q":
@@ -634,19 +655,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             it["ans"][ keymap[qnum] ] = code
         if qnum < 6:
             it["q"] = qnum + 1
-            await q.message.reply_text(T[lang][f"intake_q{qnum+1}"], reply_markup=kb_intake_q(lang, qnum+1))
+            await q.message.reply_text(t(lang, f"intake_q{qnum+1}"), reply_markup=kb_intake_q(lang, qnum+1))
             return
         else:
             intake_save(uid, q.from_user.username or "", lang, it["ans"])
             s["mode"]="chat"; s["intake"]={"q":0, "ans":{}}
-            await q.message.reply_text(T[lang]["intake_done"])
+            await q.message.reply_text(t(lang,"intake_done"))
             if (users_get(uid).get("consent") or "").lower() not in {"yes","no"}:
                 s["mode"]="await_consent"
-                await q.message.reply_text(T[lang]["consent"])
+                await q.message.reply_text(t(lang,"consent"))
             return
 
 # =========================
-# Text handler
+# Text handler — ЯДРО: язык определяется на КАЖДОЕ сообщение
 # =========================
 THUMBS_UP = {"👍","👍🏻","👍🏼","👍🏽","👍🏾","👍🏿"}
 THUMBS_DOWN = {"👎","👎🏻","👎🏼","👎🏽","👎🏾","👎🏿"}
@@ -694,76 +715,73 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
     text = (update.message.text or "").strip()
 
-    # язык
-    urec = users_get(uid)
-    if not urec:
-        cand=None
-        if detect:
-            try: cand = detect(text) if text else None
-            except Exception: cand=None
-        lang = norm_lang(cand or getattr(user,"language_code",None))
-        users_upsert(uid, user.username or "", lang)
-    else:
-        lang = norm_lang(urec.get("lang") or getattr(user,"language_code",None))
-        lang = maybe_autoswitch_lang(uid, text, lang)
-
+    # базовый профильный язык (для случая пустого текста)
+    base = users_get(uid).get("lang") or norm_lang(getattr(user,"language_code",None)) or "en"
+    # динамический язык СЕЙЧАС
+    msg_lang = detect_lang_per_message(text, base)
+    # сохранить последний язык в сессии (для коллбеков)
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
+    s["last_lang"] = msg_lang
 
-    # Спрячем старые нижние клавиатуры у пользователя
+    # если новый пользователь — сохраним базовый (не мешает динамическому)
+    if not users_get(uid):
+        users_upsert(uid, user.username or "", base)
+
+    # спрячем старые нижние клавиатуры на привет
     if text.lower() in GREETINGS and not s.get("intake_offered"):
-        await update.message.reply_text(T[lang]["welcome"], reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(t(msg_lang,"welcome"), reply_markup=ReplyKeyboardRemove())
 
-    # Предложение опроса — ОДИН раз в сессии, вне зависимости от текста
+    # предложить опрос — один раз за сессию
     if not s.get("intake_offered"):
         s["intake_offered"] = True
-        await update.message.reply_text(T[lang]["intake_offer"], reply_markup=kb_intake_offer(lang))
+        await update.message.reply_text(t(msg_lang,"intake_offer"), reply_markup=kb_intake_offer(msg_lang))
 
     # Intake: ждём возраст (Q1)
     if s.get("mode") == "intake" and s.get("intake",{}).get("q") == 1:
         m = re.fullmatch(r"\s*(\d{1,3})\s*", text)
         if not m:
-            await update.message.reply_text(T[lang]["age_invalid"], reply_markup=kb_intake_skip(lang))
+            await update.message.reply_text(t(msg_lang,"age_invalid"), reply_markup=kb_intake_skip(msg_lang))
             return
         age = int(m.group(1))
         if not (1 <= age <= 119):
-            await update.message.reply_text(T[lang]["age_invalid"], reply_markup=kb_intake_skip(lang))
+            await update.message.reply_text(t(msg_lang,"age_invalid"), reply_markup=kb_intake_skip(msg_lang))
             return
         it = s["intake"]; it["ans"]["age"] = age; it["q"] = 2
-        await update.message.reply_text(T[lang]["intake_q2"], reply_markup=kb_intake_q(lang,2))
+        await update.message.reply_text(t(msg_lang,"intake_q2"), reply_markup=kb_intake_q(msg_lang,2))
         return
 
     # Отзывы: 👍/👎 и текст
     if text in THUMBS_UP:
         ctx_label = get_feedback_context(uid)
         save_feedback(uid, user.username or "", ctx_label, "1", "")
-        await update.message.reply_text("Спасибо за 👍"); return
+        await update.message.reply_text({"ru":"Спасибо за 👍","uk":"Дякую за 👍","es":"Gracias por 👍","en":"Thanks for 👍"}[msg_lang]); return
     if text in THUMBS_DOWN:
         ctx_label = get_feedback_context(uid)
         save_feedback(uid, user.username or "", ctx_label, "0", "")
-        await update.message.reply_text("Спасибо за 👎 — учту и буду полезнее."); return
+        await update.message.reply_text({"ru":"Спасибо за 👎 — учту.","uk":"Дякую за 👎 — врахую.","es":"Gracias por 👎 — lo tendré en cuenta.","en":"Thanks for 👎 — noted."}[msg_lang]); return
     if s.get("awaiting_comment") and not text.startswith("/"):
         ctx_label = get_feedback_context(uid)
         save_feedback(uid, user.username or "", ctx_label, "", text)
         s["awaiting_comment"]=False
-        await update.message.reply_text("Отзыв сохранён 🙌")
+        await update.message.reply_text({"ru":"Отзыв сохранён 🙌","uk":"Відгук збережено 🙌","es":"Comentario guardado 🙌","en":"Feedback saved 🙌"}[msg_lang])
         return
 
     # Согласие на чек-ины
     if s.get("mode") == "await_consent":
         low = text.lower()
-        if is_yes(lang, low):
+        if is_yes(msg_lang, low):
             users_set(uid,"consent","yes"); s["mode"]="chat"
-            await update.message.reply_text(T[lang]["thanks"]); return
-        if is_no(lang, low):
+            await update.message.reply_text(t(msg_lang,"thanks")); return
+        if is_no(msg_lang, low):
             users_set(uid,"consent","no"); s["mode"]="chat"
-            await update.message.reply_text(T[lang]["thanks"]); return
-        await update.message.reply_text("Пожалуйста, напишите «да» или «нет»."); return
+            await update.message.reply_text(t(msg_lang,"thanks")); return
+        await update.message.reply_text({"ru":"Напишите «да» или «нет».","uk":"Напишіть «так» чи «ні».","es":"Escribe «sí» o «no».","en":"Please write “yes” or “no”."}[msg_lang]); return
 
     # Чек-ин (0–10)
     if s.get("mode") == "await_rating":
         rating = parse_rating(text)
         if rating is None or not (0 <= rating <= 10):
-            await update.message.reply_text(T[lang]["rate_req"]); return
+            await update.message.reply_text(t(msg_lang,"rate_req")); return
         ep = episode_find_open(uid)
         if ep:
             eid = ep["episode_id"]
@@ -771,41 +789,41 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             set_feedback_context(uid, "checkin")
             if rating <= 3:
                 episode_set(eid,"status","resolved")
-                await update.message.reply_text({"ru":"Отлично! Рад за прогресс 💪","en":"Great! Love the progress 💪","uk":"Чудово! Гарний прогрес 💪","es":"¡Genial! Buen progreso 💪"}[lang])
+                await update.message.reply_text({"ru":"Отлично! Прогресс 💪","uk":"Чудово! Прогрес 💪","es":"¡Genial! Progreso 💪","en":"Great progress 💪"}[msg_lang])
             else:
-                await update.message.reply_text({"ru":"Понимаю. Если появятся красные флаги — лучше обратиться к врачу.","en":"I hear you. If red flags appear, please consider medical help.","uk":"Розумію. Якщо з’являться «червоні прапорці», зверніться до лікаря.","es":"Entiendo. Si aparecen señales de alarma, consulta a un médico."}[lang])
+                await update.message.reply_text({"ru":"Понимаю. Если появятся красные флаги — лучше обратиться к врачу.","uk":"Розумію. Якщо з’являться «червоні прапорці» — зверніться до лікаря.","es":"Entiendo. Si aparecen señales de alarma, consulta a un médico.","en":"I hear you. If red flags appear, please seek medical care."}[msg_lang])
         s["mode"]="chat"
         if feedback_prompt_needed(uid):
-            await update.message.reply_text(T[lang]["feedback_hint"])
+            await update.message.reply_text(t(msg_lang,"feedback_hint"))
         return
 
     # Подтверждение плана
     if s.get("mode") == "await_plan":
         low = text.lower(); eid = s.get("episode_id")
         set_feedback_context(uid, "plan")
-        if is_yes(lang, low):
+        if is_yes(msg_lang, low):
             if eid: episode_set(eid,"plan_accepted","1")
             s["mode"]="await_reminder"
-            await update.message.reply_text(T[lang]["remind_when"]); return
-        if is_later(lang, low):
+            await update.message.reply_text(t(msg_lang,"remind_when")); return
+        if is_later(msg_lang, low):
             if eid: episode_set(eid,"plan_accepted","later")
             s["mode"]="await_reminder"
-            await update.message.reply_text(T[lang]["remind_when"]); return
-        if is_no(lang, low):
+            await update.message.reply_text(t(msg_lang,"remind_when")); return
+        if is_no(msg_lang, low):
             if eid: episode_set(eid,"plan_accepted","0")
             s["mode"]="chat"
-            await update.message.reply_text({"ru":"Хорошо, без плана. Можем просто отслеживать самочувствие.","en":"Alright, no plan. We can just track how you feel.","uk":"Добре, без плану. Можемо просто відстежувати самопочуття.","es":"De acuerdo, sin plan. Podemos solo revisar cómo sigues."}[lang])
+            await update.message.reply_text({"ru":"Ок, без плана. Давай просто отслеживать самочувствие.","uk":"Добре, без плану. Відстежимо самопочуття.","es":"De acuerdo, sin plan. Revisemos cómo sigues.","en":"Alright, no plan. We’ll just track how you feel."}[msg_lang])
             if feedback_prompt_needed(uid):
-                await update.message.reply_text(T[lang]["feedback_hint"])
+                await update.message.reply_text(t(msg_lang,"feedback_hint"))
             return
-        await update.message.reply_text({"ru":"Ответьте «да», «позже» или «нет».","en":"Please reply “yes”, “later” or “no”.","uk":"Відповідайте «так», «пізніше» або «ні».","es":"Responde «sí», «más tarde» o «no»."}[lang])
+        await update.message.reply_text({"ru":"Ответьте «да», «позже» или «нет».","uk":"Відповідайте «так», «пізніше» або «ні».","es":"Responde «sí», «más tarde» o «no».","en":"Please reply “yes”, “later” or “no”."}[msg_lang])
         return
 
     # Выбор времени напоминания
     if s.get("mode") == "await_reminder":
-        code = parse_reminder_code(lang, text)
+        code = parse_reminder_code(msg_lang, text)
         if not code:
-            await update.message.reply_text(T[lang]["remind_when"]); return
+            await update.message.reply_text(t(msg_lang,"remind_when")); return
         urec = users_get(uid); tz_off = 0
         try: tz_off = int(urec.get("tz_offset") or "0")
         except Exception: tz_off = 0
@@ -827,15 +845,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             episode_set(eid,"next_checkin_at", iso(target_utc))
             delay = max(60, (target_utc - nowu).total_seconds())
             context.job_queue.run_once(job_checkin, when=delay, data={"user_id": uid, "episode_id": eid})
-        await update.message.reply_text(T[lang]["remind_ok"])
+        await update.message.reply_text(t(msg_lang,"remind_ok"))
         s["mode"]="chat"
         if feedback_prompt_needed(uid):
-            await update.message.reply_text(T[lang]["feedback_hint"])
+            await update.message.reply_text(t(msg_lang,"feedback_hint"))
         return
 
     # Если пользователь пишет во время незавершённого intake (кроме Q1) — просим кнопки
     if s.get("mode") == "intake":
-        await update.message.reply_text(T[lang]["use_buttons"])
+        await update.message.reply_text(t(msg_lang,"use_buttons"))
         return
 
     # Экстренные фразы — не блокируем
@@ -843,18 +861,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         esc = {"ru":"⚠️ Если есть высокая температура, одышка, боль в груди или односторонняя слабость — обратитесь к врачу.",
                "en":"⚠️ If high fever, shortness of breath, chest pain or one-sided weakness — seek medical care.",
                "uk":"⚠️ Якщо висока темп., задишка, біль у грудях або однобічна слабкість — зверніться до лікаря.",
-               "es":"⚠️ Si hay fiebre alta, falta de aire, dolor torácico o debilidad de un lado — acude a un médico."}[lang]
+               "es":"⚠️ Si hay fiebre alta, falta de aire, dolor torácico o debilidad de un lado — acude a un médico."}[msg_lang]
         await send_nodup(uid, esc, update.message.reply_text)
 
-    # CHAT FIRST (LLM)
-    data = llm_chat(uid, lang, text)
+    # CHAT-FIRST (LLM) — ОТВЕТ НА ЯЗЫКЕ ТЕКУЩЕГО СООБЩЕНИЯ
+    data = llm_chat(uid, msg_lang, text)
     if not data:
         # мягкий фолбэк
-        if lang=="ru":
-            await update.message.reply_text("Понимаю. Где именно ощущаете и как давно началось? Если можно — оцените по шкале 0–10.")
-        elif lang=="uk":
+        if msg_lang=="ru":
+            await update.message.reply_text("Понимаю. Где именно ощущаете и как давно началось? Если можно — оцените 0–10.")
+        elif msg_lang=="uk":
             await update.message.reply_text("Розумію. Де саме і відколи це почалось? Якщо можете — оцініть 0–10.")
-        elif lang=="es":
+        elif msg_lang=="es":
             await update.message.reply_text("Entiendo. ¿Dónde exactamente y desde cuándo empezó? Si puedes, valora 0–10.")
         else:
             await update.message.reply_text("I hear you. Where exactly is it and since when? If you can, rate it 0–10.")
@@ -879,7 +897,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if na == "rate_0_10":
         s["mode"]="await_rating"
-        await update.message.reply_text(T[lang]["rate_req"]); return
+        await update.message.reply_text(t(msg_lang,"rate_req")); return
 
     if na == "confirm_plan":
         eid = s.get("episode_id")
@@ -888,26 +906,26 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             s["episode_id"]=eid
         if not plan_steps:
             set_feedback_context(uid, "plan")
-            await send_nodup(uid, "\n".join(fallback_plan(lang, ans)), update.message.reply_text)
+            await send_nodup(uid, "\n".join(fallback_plan(msg_lang, ans)), update.message.reply_text)
         s["mode"]="await_plan"
-        await update.message.reply_text(T[lang]["plan_try"]); return
+        await update.message.reply_text(t(msg_lang,"plan_try")); return
 
     if na == "pick_reminder":
         s["mode"]="await_reminder"
-        await update.message.reply_text(T[lang]["remind_when"]); return
+        await update.message.reply_text(t(msg_lang,"remind_when")); return
 
     if na == "escalate":
         esc = {"ru":"⚠️ Если высокая температура, одышка, боль в груди или односторонняя слабость — обратитесь к врачу.",
                "en":"⚠️ If high fever, shortness of breath, chest pain or one-sided weakness — seek medical care.",
                "uk":"⚠️ Якщо висока темп., задишка, біль у грудях або однобічна слабкість — зверніться до лікаря.",
-               "es":"⚠️ Si hay fiebre alta, falta de aire, dolor torácico o debilidad de un lado — acude a un médico."}[lang]
+               "es":"⚠️ Si hay fiebre alta, falta de aire, dolor torácico o debilidad de un lado — acude a un médico."}[msg_lang]
         await send_nodup(uid, esc, update.message.reply_text)
         if feedback_prompt_needed(uid):
-            await update.message.reply_text(T[lang]["feedback_hint"])
+            await update.message.reply_text(t(msg_lang,"feedback_hint"))
         return
 
     if na == "ask_feedback" and feedback_prompt_needed(uid):
-        await update.message.reply_text(T[lang]["feedback_hint"])
+        await update.message.reply_text(t(msg_lang,"feedback_hint"))
         return
 
     s["mode"]="chat"; sessions[uid]=s
