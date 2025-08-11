@@ -2,8 +2,10 @@
 """
 TendAI — чат-первый ассистент здоровья и долголетия
 — Естественный диалог (без нижних кнопок), LLM на каждое сообщение.
-— Интро-опросник (6 вопросов) с инлайн-кнопками. /intake — запустить вручную.
-— Отзывы: 👍/👎 и текстовые комментарии → Google Sheets (лист Feedback) c контекстом.
+— Интро-опросник перед консультацией:
+    Q1: возраст (вводится ЦИФРОЙ, полных лет),
+    Q2–Q6: инлайн-кнопки (пол при рождении, хронические, лекарства, аллергии, беременность).
+— Отзывы: 👍/👎 и текстовые комментарии → Google Sheets (лист Feedback) с контекстом.
 — Эпизоды, напоминания и чек-ины сохраняются в Google Sheets.
 """
 
@@ -18,7 +20,7 @@ try:
 except Exception:
     detect = None
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
@@ -45,7 +47,7 @@ logging.basicConfig(
 
 TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # поставь gpt-5, если доступна
+OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # поставь gpt-5, если доступен
 SHEET_NAME      = os.getenv("SHEET_NAME", "TendAI Feedback")
 
 if not TELEGRAM_TOKEN:
@@ -82,7 +84,7 @@ ws_eps      = _get_or_create_ws("Episodes", [
 ])
 ws_intake   = _get_or_create_ws("Intake", [
     "timestamp","user_id","username","lang",
-    "age_band","sex_at_birth","chronic","meds","allergy","pregnancy"
+    "age","sex_at_birth","chronic","meds","allergy","pregnancy"
 ])
 
 # =========================
@@ -97,7 +99,7 @@ ws_intake   = _get_or_create_ws("Intake", [
 #   "feedback_context": str,
 #   "last_advice_hash": str,
 #   "last_feedback_prompt_ts": float,
-#   "intake": {"q":1..6, "ans":{key:value}}
+#   "intake": {"q":1..6, "ans":{key:value}}   # q=1 — возраст вводом числа
 # }
 sessions: dict[int, dict] = {}
 
@@ -130,13 +132,14 @@ T = {
         "intake_start":"Начать",
         "intake_skip":"Пропустить",
         "intake_done":"Готово! Спасибо. Можем продолжать.",
-        "intake_q1":"Возрастной диапазон?",
+        "intake_q1_age":"Сколько вам полных лет? Пожалуйста, напишите число (например, 34).",
         "intake_q2":"Пол при рождении?",
         "intake_q3":"Хронические состояния?",
         "intake_q4":"Регулярные лекарства?",
         "intake_q5":"Аллергии на лекарства?",
         "intake_q6":"Возможна ли беременность сейчас?",
         "use_buttons":"Пожалуйста, выберите вариант кнопкой ниже (или «Пропустить»).",
+        "age_invalid":"Нужно одно число от 1 до 119. Напишите возраст, например: 34.",
     },
     "en": {
         "welcome":"Hi! I’m TendAI — a warm health & longevity assistant. Tell me briefly what’s going on and I’ll help with a gentle plan.",
@@ -156,13 +159,14 @@ T = {
         "intake_start":"Start",
         "intake_skip":"Skip",
         "intake_done":"All set — thanks. Let’s continue.",
-        "intake_q1":"Age range?",
+        "intake_q1_age":"How old are you (full years)? Please reply with a number, e.g., 34.",
         "intake_q2":"Sex at birth?",
         "intake_q3":"Chronic conditions?",
         "intake_q4":"Regular medications?",
         "intake_q5":"Drug allergies?",
         "intake_q6":"Could you be pregnant now?",
         "use_buttons":"Please pick an option below (or “Skip”).",
+        "age_invalid":"I need a single number between 1 and 119. Please write your age, e.g., 34.",
     },
     "uk": {
         "welcome":"Привіт! Я TendAI — теплий асистент зі здоров’я та довголіття. Коротко опишіть, що відбувається — підкажу м’який план.",
@@ -182,13 +186,14 @@ T = {
         "intake_start":"Почати",
         "intake_skip":"Пропустити",
         "intake_done":"Готово! Дякуємо. Продовжимо.",
-        "intake_q1":"Віковий діапазон?",
+        "intake_q1_age":"Скільки вам повних років? Напишіть число (наприклад, 34).",
         "intake_q2":"Стать при народженні?",
         "intake_q3":"Хронічні стани?",
         "intake_q4":"Регулярні ліки?",
         "intake_q5":"Алергії на ліки?",
         "intake_q6":"Чи можлива вагітність зараз?",
         "use_buttons":"Будь ласка, оберіть варіант нижче (або «Пропустити»).",
+        "age_invalid":"Потрібне одне число від 1 до 119. Напишіть вік, напр., 34.",
     },
     "es": {
         "welcome":"¡Hola! Soy TendAI — un asistente cálido de salud y longevidad. Cuéntame brevemente y te daré un plan suave.",
@@ -208,24 +213,24 @@ T = {
         "intake_start":"Empezar",
         "intake_skip":"Omitir",
         "intake_done":"Listo, gracias. Sigamos.",
-        "intake_q1":"Rango de edad?",
+        "intake_q1_age":"¿Qué edad tienes (años cumplidos)? Escribe un número, p. ej., 34.",
         "intake_q2":"Sexo al nacer?",
         "intake_q3":"Enfermedades crónicas?",
         "intake_q4":"Medicaciones habituales?",
         "intake_q5":"Alergias a fármacos?",
         "intake_q6":"¿Podrías estar embarazada ahora?",
         "use_buttons":"Elige una opción abajo (o «Omitir»).",
+        "age_invalid":"Necesito un solo número entre 1 y 119. Escribe tu edad, p. ej., 34.",
     },
 }
 def t(lang: str, key: str) -> str:
     return T.get(lang, T["en"]).get(key, T["en"].get(key, key))
 
 # =========================
-# Intake options & keyboards
+# Intake options & keyboards (Q2–Q6 кнопками)
 # =========================
 INTAKE_OPTS = {
     "ru": {
-        "q1":[("18-29","18–29"),("30-44","30–44"),("45-59","45–59"),("60-74","60–74"),("75+","75+")],
         "q2":[("M","Мужской"),("F","Женский"),("NA","Предпочту не указывать")],
         "q3":[("none","Нет"),("cardio_htn","Сердце/гипертония"),("diab","Сахарный диабет"),("asthma","Астма/ХОБЛ"),("kidney_liver","Почки/печень"),("autoimm","Аутоиммунные/иммуносупр."),("other","Другое")],
         "q4":[("none","Нет"),("anticoag","Антикоагулянты"),("steroids","Стероиды/иммуносупр."),("other","Другое регулярно")],
@@ -233,7 +238,6 @@ INTAKE_OPTS = {
         "q6":[("yes","Да"),("no","Нет"),("na","Н/Д")],
     },
     "en": {
-        "q1":[("18-29","18–29"),("30-44","30–44"),("45-59","45–59"),("60-74","60–74"),("75+","75+")],
         "q2":[("M","Male"),("F","Female"),("NA","Prefer not say")],
         "q3":[("none","None"),("cardio_htn","Heart/Hypertension"),("diab","Diabetes"),("asthma","Asthma/COPD"),("kidney_liver","Kidney/Liver"),("autoimm","Autoimmune/Immunosupp."),("other","Other")],
         "q4":[("none","None"),("anticoag","Anticoagulants"),("steroids","Steroids/Immunosupp."),("other","Other regular")],
@@ -241,7 +245,6 @@ INTAKE_OPTS = {
         "q6":[("yes","Yes"),("no","No"),("na","N/A")],
     },
     "uk": {
-        "q1":[("18-29","18–29"),("30-44","30–44"),("45-59","45–59"),("60-74","60–74"),("75+","75+")],
         "q2":[("M","Чоловіча"),("F","Жіноча"),("NA","Не вказувати")],
         "q3":[("none","Немає"),("cardio_htn","Серце/Гіпертензія"),("diab","Діабет"),("asthma","Астма/ХОЗЛ"),("kidney_liver","Нирки/печінка"),("autoimm","Аутоімунні/імунодепр."),("other","Інше")],
         "q4":[("none","Немає"),("anticoag","Антикоагулянти"),("steroids","Стероїди/імунодепр."),("other","Інше регулярно")],
@@ -249,7 +252,6 @@ INTAKE_OPTS = {
         "q6":[("yes","Так"),("no","Ні"),("na","Н/Д")],
     },
     "es": {
-        "q1":[("18-29","18–29"),("30-44","30–44"),("45-59","45–59"),("60-74","60–74"),("75+","75+")],
         "q2":[("M","Masculino"),("F","Femenino"),("NA","Prefiero no decir")],
         "q3":[("none","Ninguna"),("cardio_htn","Corazón/Hipertensión"),("diab","Diabetes"),("asthma","Asma/EPOC"),("kidney_liver","Riñón/Hígado"),("autoimm","Autoinm./Inmunosup."),("other","Otra")],
         "q4":[("none","Ninguna"),("anticoag","Anticoagulantes"),("steroids","Esteroides/Inmunosup."),("other","Otra habitual")],
@@ -262,6 +264,8 @@ def kb_intake_start(lang: str):
         InlineKeyboardButton(t(lang,"intake_start"), callback_data="intake|start"),
         InlineKeyboardButton(t(lang,"intake_skip"),  callback_data="intake|skip"),
     ]])
+def kb_intake_skip(lang: str):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t(lang,"intake_skip"), callback_data="intake|skip")]])
 def kb_intake_q(lang: str, qnum: int):
     key = f"q{qnum}"
     rows = []
@@ -325,9 +329,10 @@ def intake_save(uid: int, username: str, lang: str, ans: dict):
     ws_intake.append_row([
         datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         str(uid), username or "", lang,
-        ans.get("age_band",""), ans.get("sex_at_birth",""),
-        ans.get("chronic",""), ans.get("meds",""),
-        ans.get("allergy",""), ans.get("pregnancy",""),
+        str(ans.get("age","")),
+        ans.get("sex_at_birth",""), ans.get("chronic",""),
+        ans.get("meds",""), ans.get("allergy",""),
+        ans.get("pregnancy",""),
     ])
     users_set(uid, "intake_ts", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -346,18 +351,13 @@ def intake_exists_recent(uid: int, months=6) -> bool:
     return (datetime.utcnow() - latest).days < months*30
 
 # =========================
-# Feedback helpers (Sheets)
+# Feedback (Sheets)
 # =========================
 def save_feedback(uid: int, username: str, context_label: str, rating: str, comment: str):
-    """Единая точка записи отзывов в лист Feedback."""
     try:
         ws_feedback.append_row([
             datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-            str(uid),
-            context_label or "general",
-            username or "",
-            rating,  # "1" | "0" | "" (если только комментарий)
-            comment or ""
+            str(uid), context_label or "general", username or "", rating, comment or ""
         ])
         logging.info(f"Feedback saved: uid={uid} ctx={context_label} rating={rating} comment_len={len(comment or '')}")
     except Exception as e:
@@ -421,7 +421,6 @@ def llm_chat(uid: int, lang: str, user_text: str) -> dict:
         data = _json_from(content)
         if not isinstance(data, dict):
             data = {}
-        # save compact natural text into history
         a = data.get("assistant","")
         hist.append({"role":"user","content":user_text[:1000]})
         if a: hist.append({"role":"assistant","content":a[:1000]})
@@ -445,18 +444,8 @@ YES = {
     "uk":{"так","ок","гаразд","зроблю","готовий","готова"},
     "es":{"sí","si","ok","vale","listo","lista"},
 }
-LATER = {
-    "ru":{"позже","потом","не сейчас"},
-    "en":{"later","not now"},
-    "uk":{"пізніше","не зараз"},
-    "es":{"más tarde","luego","no ahora"},
-}
-NO = {
-    "ru":{"нет","не","не буду","не хочу"},
-    "en":{"no","nope"},
-    "uk":{"ні","не буду"},
-    "es":{"no"},
-}
+LATER = {"ru":{"позже","потом","не сейчас"},"en":{"later","not now"},"uk":{"пізніше","не зараз"},"es":{"más tarde","luego","no ahora"}}
+NO = {"ru":{"нет","не","не буду","не хочу"},"en":{"no","nope"},"uk":{"ні","не буду"},"es":{"no"}}
 def is_yes(lang, s): return s.lower() in YES.get(lang,set())
 def is_no(lang, s): return s.lower() in NO.get(lang,set())
 def is_later(lang, s): return s.lower() in LATER.get(lang,set())
@@ -473,7 +462,7 @@ def parse_reminder_code(lang: str, s: str) -> str:
 # Advice de-dupe
 # =========================
 def _hash_text(s: str) -> str: return hashlib.sha1((s or "").encode("utf-8")).hexdigest()
-def send_nodup(uid: int, text: str, send_fn):
+async def send_nodup(uid: int, text: str, send_fn):
     if not text: return
     s = sessions.setdefault(uid, {})
     h = _hash_text(text)
@@ -481,7 +470,7 @@ def send_nodup(uid: int, text: str, send_fn):
         return
     s["last_advice_hash"] = h
     sessions[uid] = s
-    return send_fn(text)
+    await send_fn(text)
 
 # =========================
 # Jobs (check-ins)
@@ -494,7 +483,7 @@ async def job_checkin(context: ContextTypes.DEFAULT_TYPE):
     if (u.get("paused") or "").lower() == "yes": return
     lang = u.get("lang") or "en"
     try:
-        await context.bot.send_message(uid, t(lang,"checkin_prompt"))
+        await context.bot.send_message(uid, T[lang]["checkin_prompt"])
         s = sessions.setdefault(uid, {})
         s["mode"] = "await_rating"
         s["episode_id"] = eid
@@ -537,27 +526,28 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = norm_lang(cand or getattr(user,"language_code",None))
         users_upsert(uid, user.username or "", lang)
 
-    await update.message.reply_text(t(lang,"welcome"))
+    # Скрываем любые старые нижние клавиатуры
+    await update.message.reply_text(T[lang]["welcome"], reply_markup=ReplyKeyboardRemove())
 
-    # предложим с порога мини-интро-опрос если не проходил недавно
+    # предложим мини-опрос, если давно не проходил
     if not intake_exists_recent(uid):
         s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
         s["mode"] = "intake"
         s["intake"] = {"q":0, "ans":{}}
-        await update.message.reply_text(t(lang,"intake_intro"), reply_markup=kb_intake_start(lang))
+        await update.message.reply_text(T[lang]["intake_intro"], reply_markup=kb_intake_start(lang))
     else:
         s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
         if (users_get(uid).get("consent") or "").lower() not in {"yes","no"}:
             s["mode"]="await_consent"
-            await update.message.reply_text(t(lang,"consent"))
+            await update.message.reply_text(T[lang]["consent"])
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(update.effective_user.id).get("lang") or getattr(update.effective_user,"language_code",None))
-    await update.message.reply_text(t(lang,"help"))
+    await update.message.reply_text(T[lang]["help"])
 
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(update.effective_user.id).get("lang") or getattr(update.effective_user,"language_code",None))
-    await update.message.reply_text(t(lang,"privacy"))
+    await update.message.reply_text(T[lang]["privacy"])
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id; users_set(uid,"paused","yes"); await update.message.reply_text("⏸️ Paused.")
@@ -574,7 +564,7 @@ async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ws_eps.cell(i,2).value == str(uid): to_del.append(i)
     for j, row_i in enumerate(to_del):
         ws_eps.delete_rows(row_i - j)
-    await update.message.reply_text(t(norm_lang(getattr(update.effective_user,"language_code",None)),"deleted"))
+    await update.message.reply_text(T[norm_lang(getattr(update.effective_user,"language_code",None))]["deleted"], reply_markup=ReplyKeyboardRemove())
 
 async def cmd_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -597,7 +587,7 @@ async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user,"language_code",None))
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
     s["mode"]="intake"; s["intake"]={"q":0, "ans":{}}
-    await update.message.reply_text(t(lang,"intake_intro"), reply_markup=kb_intake_start(lang))
+    await update.message.reply_text(T[lang]["intake_intro"], reply_markup=kb_intake_start(lang))
 
 async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -623,40 +613,38 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = data.split("|")
     if len(parts) >= 2 and parts[1] == "start":
         s["mode"]="intake"; s["intake"]={"q":1,"ans":{}}
-        await q.message.reply_text(t(lang,"intake_q1"), reply_markup=kb_intake_q(lang,1))
+        await q.message.reply_text(T[lang]["intake_q1_age"], reply_markup=kb_intake_skip(lang))
         return
     if len(parts) >= 2 and parts[1] == "skip":
         s["mode"]="chat"
-        await q.message.reply_text(t(lang,"intake_done"))
-        # предложим согласие на чек-ины, если не задано
+        await q.message.reply_text(T[lang]["intake_done"])
         if (users_get(uid).get("consent") or "").lower() not in {"yes","no"}:
             s["mode"]="await_consent"
-            await q.message.reply_text(t(lang,"consent"))
+            await q.message.reply_text(T[lang]["consent"])
         return
 
+    # intake|q|<num>|<code>  (только для q=2..6)
     if len(parts) == 4 and parts[1] == "q":
-        # intake|q|<num>|<code>
         try:
             qnum = int(parts[2]); code = parts[3]
         except Exception:
             return
         it = s.setdefault("intake", {"q":1, "ans":{}})
-        # map code into structured keys
-        keymap = {1:"age_band", 2:"sex_at_birth", 3:"chronic", 4:"meds", 5:"allergy", 6:"pregnancy"}
-        it["ans"][ keymap[qnum] ] = code
-
+        keymap = {2:"sex_at_birth", 3:"chronic", 4:"meds", 5:"allergy", 6:"pregnancy"}
+        if qnum in keymap:
+            it["ans"][ keymap[qnum] ] = code
+        # следующий вопрос
         if qnum < 6:
             it["q"] = qnum + 1
-            await q.message.reply_text(t(lang, f"intake_q{qnum+1}"), reply_markup=kb_intake_q(lang, qnum+1))
+            await q.message.reply_text(T[lang][f"intake_q{qnum+1}"], reply_markup=kb_intake_q(lang, qnum+1))
             return
         else:
-            # save intake
             intake_save(uid, q.from_user.username or "", lang, it["ans"])
             s["mode"]="chat"; s["intake"]={"q":0, "ans":{}}
-            await q.message.reply_text(t(lang,"intake_done"))
+            await q.message.reply_text(T[lang]["intake_done"])
             if (users_get(uid).get("consent") or "").lower() not in {"yes","no"}:
                 s["mode"]="await_consent"
-                await q.message.reply_text(t(lang,"consent"))
+                await q.message.reply_text(T[lang]["consent"])
             return
 
 # =========================
@@ -682,29 +670,33 @@ def feedback_prompt_needed(uid: int, interval_sec=180.0) -> bool:
     return False
 
 # =========================
-# Fallback plan (если модель не дала plan_steps)
+# Fallback plan (страховка)
 # =========================
 def fallback_plan(lang: str, ans: dict) -> list[str]:
     sev = int(ans.get("severity", 5))
     red = (ans.get("red") or "None").lower()
     urgent = any(w in red for w in ["fever","shortness","breath","одыш","chest","перед","weakness","односторон"]) and sev >= 7
     if urgent:
-        return {
-            "ru":[ "⚠️ Есть признаки возможной угрозы. Пожалуйста, обратитесь за медицинской помощью." ],
-            "en":[ "⚠️ Some answers suggest urgent risks. Please seek medical care as soon as possible." ],
-            "uk":[ "⚠️ Є ознаки можливої загрози. Зверніться до лікаря." ],
-            "es":[ "⚠️ Posibles signos de urgencia. Busca atención médica lo antes posible." ],
-        }[lang]
-    base = {
-        "ru":[ "1) Вода 400–600 мл и 15–20 минут тишины.", "2) Если нет противопоказаний — ибупрофен 200–400 мг 1 раз с едой.", "3) Пауза от экранов 30–60 мин." ],
-        "en":[ "1) 400–600 ml water + 15–20 min quiet rest.", "2) If no contraindications — ibuprofen 200–400 mg once with food.", "3) Screen break 30–60 min." ],
-        "uk":[ "1) 400–600 мл води + 15–20 хв тиші.", "2) Якщо немає протипоказань — ібупрофен 200–400 мг 1 раз із їжею.", "3) Перерва від екранів 30–60 хв." ],
-        "es":[ "1) 400–600 ml de agua + 15–20 min de descanso.", "2) Si no hay contraindicaciones — ibuprofeno 200–400 mg una vez con comida.", "3) Descanso de pantallas 30–60 min." ],
-    }[lang]
+        return {"ru":["⚠️ Есть признаки возможной угрозы. Пожалуйста, обратитесь за медицинской помощью."],
+                "en":["⚠️ Some answers suggest urgent risks. Please seek medical care as soon as possible."],
+                "uk":["⚠️ Є ознаки можливої загрози. Зверніться до лікаря."],
+                "es":["⚠️ Posibles signos de urgencia. Busca atención médica lo antes posible."]}[lang]
+    base = {"ru":[ "1) 400–600 мл воды + 15–20 минут тишины.",
+                   "2) Если нет противопоказаний — ибупрофен 200–400 мг 1 раз с едой.",
+                   "3) Перерыв от экранов 30–60 мин." ],
+            "en":[ "1) 400–600 ml water + 15–20 min quiet rest.",
+                   "2) If no contraindications — ibuprofen 200–400 mg once with food.",
+                   "3) Screen break 30–60 min." ],
+            "uk":[ "1) 400–600 мл води + 15–20 хв тиші.",
+                   "2) Якщо немає протипоказань — ібупрофен 200–400 мг 1 раз із їжею.",
+                   "3) Перерва від екранів 30–60 хв." ],
+            "es":[ "1) 400–600 ml de agua + 15–20 min de descanso.",
+                   "2) Si no hay contraindicaciones — ibuprofeno 200–400 mg una vez con comida.",
+                   "3) Descanso de pantallas 30–60 min." ]}[lang]
     return base
 
 # =========================
-# Text handler (chat-first)
+# Text handler (chat-first) + Intake Q1 age
 # =========================
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
@@ -724,17 +716,31 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
 
-    # ========== Отзывы: 👍/👎 и текст ==========
+    # ----- Intake: Q1 возраст — ожидаем число -----
+    if s.get("mode") == "intake" and s.get("intake",{}).get("q") == 1:
+        m = re.fullmatch(r"\s*(\d{1,3})\s*", text)
+        if not m:
+            await update.message.reply_text(T[lang]["age_invalid"], reply_markup=kb_intake_skip(lang))
+            return
+        age = int(m.group(1))
+        if not (1 <= age <= 119):
+            await update.message.reply_text(T[lang]["age_invalid"], reply_markup=kb_intake_skip(lang))
+            return
+        it = s["intake"]; it["ans"]["age"] = age; it["q"] = 2
+        await update.message.reply_text(T[lang]["intake_q2"], reply_markup=kb_intake_q(lang,2))
+        return
+
+    # ----- Отзывы: 👍/👎 и текст -----
+    THUMBS_UP = {"👍","👍🏻","👍🏼","👍🏽","👍🏾","👍🏿"}
+    THUMBS_DOWN = {"👎","👎🏻","👎🏼","👎🏽","👎🏾","👎🏿"}
     if text in THUMBS_UP:
         ctx_label = get_feedback_context(uid)
         save_feedback(uid, user.username or "", ctx_label, "1", "")
-        await update.message.reply_text("Спасибо за 👍")
-        return
+        await update.message.reply_text("Спасибо за 👍"); return
     if text in THUMBS_DOWN:
         ctx_label = get_feedback_context(uid)
         save_feedback(uid, user.username or "", ctx_label, "0", "")
-        await update.message.reply_text("Спасибо за 👎 — учту и буду полезнее.")
-        return
+        await update.message.reply_text("Спасибо за 👎 — учту и буду полезнее."); return
     if s.get("awaiting_comment") and not text.startswith("/"):
         ctx_label = get_feedback_context(uid)
         save_feedback(uid, user.username or "", ctx_label, "", text)
@@ -742,22 +748,22 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Отзыв сохранён 🙌")
         return
 
-    # ========== Ожидание согласия ==========
+    # ----- Согласие на чек-ины -----
     if s.get("mode") == "await_consent":
         low = text.lower()
         if is_yes(lang, low):
             users_set(uid,"consent","yes"); s["mode"]="chat"
-            await update.message.reply_text(t(lang,"thanks")); return
+            await update.message.reply_text(T[lang]["thanks"]); return
         if is_no(lang, low):
             users_set(uid,"consent","no"); s["mode"]="chat"
-            await update.message.reply_text(t(lang,"thanks")); return
+            await update.message.reply_text(T[lang]["thanks"]); return
         await update.message.reply_text("Пожалуйста, напишите «да» или «нет»."); return
 
-    # ========== Чек-ин (0–10) ==========
+    # ----- Чек-ин (0–10) -----
     if s.get("mode") == "await_rating":
         rating = parse_rating(text)
         if rating is None or not (0 <= rating <= 10):
-            await update.message.reply_text(t(lang,"rate_req")); return
+            await update.message.reply_text(T[lang],"rate_req"); return
         ep = episode_find_open(uid)
         if ep:
             eid = ep["episode_id"]
@@ -770,36 +776,36 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text({"ru":"Понимаю. Если появятся красные флаги — лучше обратиться к врачу.","en":"I hear you. If red flags appear, please consider medical help.","uk":"Розумію. Якщо з’являться «червоні прапорці», зверніться до лікаря.","es":"Entiendo. Si aparecen señales de alarma, consulta a un médico."}[lang])
         s["mode"]="chat"
         if feedback_prompt_needed(uid):
-            await update.message.reply_text(t(lang,"feedback_hint"))
+            await update.message.reply_text(T[lang]["feedback_hint"])
         return
 
-    # ========== Подтверждение плана ==========
+    # ----- Подтверждение плана -----
     if s.get("mode") == "await_plan":
         low = text.lower(); eid = s.get("episode_id")
         set_feedback_context(uid, "plan")
         if is_yes(lang, low):
             if eid: episode_set(eid,"plan_accepted","1")
             s["mode"]="await_reminder"
-            await update.message.reply_text(t(lang,"remind_when")); return
+            await update.message.reply_text(T[lang]["remind_when"]); return
         if is_later(lang, low):
             if eid: episode_set(eid,"plan_accepted","later")
             s["mode"]="await_reminder"
-            await update.message.reply_text(t(lang,"remind_when")); return
+            await update.message.reply_text(T[lang]["remind_when"]); return
         if is_no(lang, low):
             if eid: episode_set(eid,"plan_accepted","0")
             s["mode"]="chat"
             await update.message.reply_text({"ru":"Хорошо, без плана. Можем просто отслеживать самочувствие.","en":"Alright, no plan. We can just track how you feel.","uk":"Добре, без плану. Можемо просто відстежувати самопочуття.","es":"De acuerdo, sin plan. Podemos solo revisar cómo sigues."}[lang])
             if feedback_prompt_needed(uid):
-                await update.message.reply_text(t(lang,"feedback_hint"))
+                await update.message.reply_text(T[lang]["feedback_hint"])
             return
         await update.message.reply_text({"ru":"Ответьте «да», «позже» или «нет».","en":"Please reply “yes”, “later” or “no”.","uk":"Відповідайте «так», «пізніше» або «ні».","es":"Responde «sí», «más tarde» o «no»."}[lang])
         return
 
-    # ========== Выбор напоминания ==========
+    # ----- Выбор времени напоминания -----
     if s.get("mode") == "await_reminder":
         code = parse_reminder_code(lang, text)
         if not code:
-            await update.message.reply_text(t(lang,"remind_when")); return
+            await update.message.reply_text(T[lang]["remind_when"]); return
         urec = users_get(uid); tz_off = 0
         try: tz_off = int(urec.get("tz_offset") or "0")
         except Exception: tz_off = 0
@@ -821,21 +827,21 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             episode_set(eid,"next_checkin_at", iso(target_utc))
             delay = max(60, (target_utc - nowu).total_seconds())
             context.job_queue.run_once(job_checkin, when=delay, data={"user_id": uid, "episode_id": eid})
-        await update.message.reply_text(t(lang,"remind_ok"))
+        await update.message.reply_text(T[lang]["remind_ok"])
         s["mode"]="chat"
         if feedback_prompt_needed(uid):
-            await update.message.reply_text(t(lang,"feedback_hint"))
+            await update.message.reply_text(T[lang]["feedback_hint"])
         return
 
-    # ========== Intake идёт только через callback ==========
+    # ----- Intake в середине — только Q1 текстом, остальные по кнопкам -----
     if s.get("mode") == "intake":
-        await update.message.reply_text(t(lang,"use_buttons"))
+        await update.message.reply_text(T[lang]["use_buttons"])
         return
 
-    # ========== CHAT-FIRST (LLM) ==========
+    # ----- CHAT FIRST (LLM) -----
     data = llm_chat(uid, lang, text)
     if not data:
-        # мягкий фолбэк без шаблонов
+        # мягкий фолбэк
         if lang=="ru":
             await update.message.reply_text("Понимаю. Где именно ощущаете и как давно началось? Если можно — оцените по шкале 0–10.")
         elif lang=="uk":
@@ -851,13 +857,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_feedback_context(uid, "chat")
         await send_nodup(uid, assistant, update.message.reply_text)
 
-    # сохранить слоты
     ans = s.setdefault("answers", {})
     for k in ["intent","loc","kind","duration","severity","red"]:
         v = (data.get("slots") or {}).get(k)
         if v not in (None,""): ans[k]=v
 
-    # если модель уже вернула шаги плана — покажем
     plan_steps = data.get("plan_steps") or []
     if plan_steps:
         set_feedback_context(uid, "plan")
@@ -867,49 +871,39 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if na == "rate_0_10":
         s["mode"]="await_rating"
-        await update.message.reply_text(t(lang,"rate_req"))
-        return
+        await update.message.reply_text(T[lang]["rate_req"]); return
 
     if na == "confirm_plan":
-        # если нет эпизода — создадим
         eid = s.get("episode_id")
         if not eid:
             eid = episode_create(uid, ans.get("intent","pain"), int(ans.get("severity",5) or 5), ans.get("red","None") or "None")
             s["episode_id"]=eid
-        # если модель не дала план — подстрахуемся
         if not plan_steps:
             set_feedback_context(uid, "plan")
             await send_nodup(uid, "\n".join(fallback_plan(lang, ans)), update.message.reply_text)
         s["mode"]="await_plan"
-        await update.message.reply_text(t(lang,"plan_try"))
-        return
+        await update.message.reply_text(T[lang]["plan_try"]); return
 
     if na == "pick_reminder":
         s["mode"]="await_reminder"
-        await update.message.reply_text(t(lang,"remind_when"))
-        return
+        await update.message.reply_text(T[lang]["remind_when"]); return
 
     if na == "escalate":
         set_feedback_context(uid, "chat")
-        esc = {
-            "ru":"⚠️ Некоторым ответам лучше уделить внимание очно. Если есть высокая температура, одышка, боль в груди или односторонняя слабость — обратитесь к врачу.",
-            "en":"⚠️ Some answers are concerning. If high fever, shortness of breath, chest pain or one-sided weakness — seek medical care.",
-            "uk":"⚠️ Деякі відповіді тривожні. Якщо висока температура, задишка, біль у грудях або однобічна слабкість — зверніться до лікаря.",
-            "es":"⚠️ Algunas respuestas son preocupantes. Si hay fiebre alta, falta de aire, dolor en el pecho o debilidad de un lado — busca atención médica.",
-        }[lang]
+        esc = {"ru":"⚠️ Если высокая температура, одышка, боль в груди или односторонняя слабость — обратитесь к врачу.",
+               "en":"⚠️ If high fever, shortness of breath, chest pain or one-sided weakness — seek medical care.",
+               "uk":"⚠️ Якщо висока темп., задишка, біль у грудях або однобічна слабкість — зверніться до лікаря.",
+               "es":"⚠️ Si hay fiebre alta, falta de aire, dolor torácico o debilidad de un lado — acude a un médico."}[lang]
         await send_nodup(uid, esc, update.message.reply_text)
         if feedback_prompt_needed(uid):
-            await update.message.reply_text(t(lang,"feedback_hint"))
+            await update.message.reply_text(T[lang]["feedback_hint"])
         return
 
     if na == "ask_feedback" and feedback_prompt_needed(uid):
-        await update.message.reply_text(t(lang,"feedback_hint"))
-        # контекст оставляем текущий (обычно "chat" или "plan")
+        await update.message.reply_text(T[lang]["feedback_hint"])
         return
 
-    # иначе — свободный чат
-    s["mode"]="chat"
-    sessions[uid]=s
+    s["mode"]="chat"; sessions[uid]=s
 
 # =========================
 # Runner
