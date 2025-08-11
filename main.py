@@ -4,11 +4,12 @@ import re
 import json
 import uuid
 import logging
+from time import time
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
-# langdetect — используем, но безопасно
+# langdetect — по возможности
 try:
     from langdetect import detect, DetectorFactory
     DetectorFactory.seed = 0
@@ -24,12 +25,12 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,  # оставляем на будущее (совместимость)
+    CallbackQueryHandler,  # для совместимости со старыми сообщениями
     ContextTypes,
     filters,
 )
 
-# ===== OpenAI (для гибридного парсера/подсказок) =====
+# ===== OpenAI =====
 try:
     from openai import OpenAI
 except Exception:
@@ -99,15 +100,17 @@ ws_episodes = _get_or_create_ws(
 # State (RAM)
 # =========================
 # sessions[user_id] = {
-#   "topic": "pain",
-#   "flow": "collect|confirm|redflags|accept_wait|remind_wait|plan",
+#   "topic": "pain" | ...,
+#   "flow": "chat"|"confirm"|"accept_wait"|"remind_wait"|"plan",
 #   "answers": {"loc","kind","duration","severity","red"},
-#   "await_step": int|str,
+#   "await_step": int|str,  # "checkin"
 #   "episode_id": "...",
+#   "chat_history": [{"role":"user/assistant","content":"..."}],
 #   "awaiting_comment": bool,
 #   "awaiting_feedback_choice": bool,
 #   "awaiting_consent": bool,
 #   "feedback_context": str,
+#   "last_send": {key: ts},
 # }
 sessions: dict[int, dict] = {}
 
@@ -135,14 +138,6 @@ T = {
         "ask_consent": "May I check in with you later about how you feel?",
         "yes": "Yes", "no": "No",
         "choose_topic": "Choose a topic:",
-        "open_prompt": "Briefly: where is the pain, how does it feel (sharp/dull/etc.), and how long has it lasted?\nExamples: “Head, throbbing, 3 hours” / “Lower back, sharp when bending, 2 days”.",
-        "triage_pain_q1": "Where does it hurt?\nChoose below ⤵️",
-        "triage_pain_q1_opts": ["Head", "Throat", "Back", "Belly", "Chest", "Other"],
-        "triage_pain_q2": "What kind of pain?\nChoose below ⤵️",
-        "triage_pain_q2_opts": ["Dull", "Sharp", "Throbbing", "Burning", "Pressing"],
-        "triage_pain_q3": "How long has it lasted?\nChoose below ⤵️",
-        "triage_pain_q3_opts": ["<3h", "3–24h", ">1 day", ">1 week"],
-        "triage_pain_q4": "Rate the pain now (0–10):",
         "triage_pain_q5": "Any of these now?\n(High fever, Vomiting, Weakness/numbness, Speech/vision issues, Trauma, None)",
         "triage_pain_q5_opts": ["High fever", "Vomiting", "Weakness/numbness", "Speech/vision issues", "Trauma", "None"],
         "confirm_title": "Please confirm I got this right:",
@@ -189,14 +184,6 @@ T = {
         "ask_consent": "Можно я напишу позже, чтобы узнать, как вы себя чувствуете?",
         "yes": "Да", "no": "Нет",
         "choose_topic": "Выберите тему:",
-        "open_prompt": "Коротко: где болит, какой характер (острая/тупая и т.п.) и сколько длится?\nПримеры: «Голова, пульсирующая, 3 часа» / «Поясница, колющая при наклоне, 2 дня».",
-        "triage_pain_q1": "Где болит?\nВыберите ниже ⤵️",
-        "triage_pain_q1_opts": ["Голова", "Горло", "Спина", "Живот", "Грудь", "Другое"],
-        "triage_pain_q2": "Какой характер боли?\nВыберите ниже ⤵️",
-        "triage_pain_q2_opts": ["Тупая", "Острая", "Пульсирующая", "Жгучая", "Давящая"],
-        "triage_pain_q3": "Как долго длится?\nВыберите ниже ⤵️",
-        "triage_pain_q3_opts": ["<3ч", "3–24ч", ">1 дня", ">1 недели"],
-        "triage_pain_q4": "Оцените боль (0–10):",
         "triage_pain_q5": "Есть что-то из этого?\n(Высокая температура, Рвота, Слабость/онемение, Проблемы речи/зрения, Травма, Нет)",
         "triage_pain_q5_opts": ["Высокая температура", "Рвота", "Слабость/онемение", "Проблемы речи/зрения", "Травма", "Нет"],
         "confirm_title": "Проверьте, верно ли я понял:",
@@ -243,11 +230,6 @@ T = {
         "ask_consent": "Можу написати пізніше, щоб дізнатися, як ви?",
         "yes": "Так", "no": "Ні",
         "choose_topic": "Оберіть тему:",
-        "triage_pain_q1": "Де болить?\nВиберіть нижче ⤵️",
-        "triage_pain_q2": "Який характер болю?\nВиберіть нижче ⤵️",
-        "triage_pain_q3": "Як довго триває?\nВиберіть нижче ⤵️",
-        "triage_pain_q3_opts": ["<3год", "3–24год", ">1 дня", ">1 тижня"],
-        "triage_pain_q4": "Оцініть біль (0–10):",
         "triage_pain_q5": "Є щось із цього?\n(Висока температура, Блювання, Слабкість/оніміння, Мова/зір, Травма, Немає)",
         "triage_pain_q5_opts": ["Висока температура", "Блювання", "Слабкість/оніміння", "Мова/зір", "Травма", "Немає"],
         "confirm_title": "Підтвердіть, чи правильно я зрозумів:",
@@ -294,11 +276,6 @@ T = {
         "ask_consent": "¿Puedo escribirte más tarde para saber cómo sigues?",
         "yes": "Sí", "no": "No",
         "choose_topic": "Elige un tema:",
-        "triage_pain_q1": "¿Dónde te duele?\nElige abajo ⤵️",
-        "triage_pain_q2": "¿Qué tipo de dolor?\nElige abajo ⤵️",
-        "triage_pain_q3": "¿Desde cuándo lo tienes?\nElige abajo ⤵️",
-        "triage_pain_q3_opts": ["<3h", "3–24h", ">1 día", ">1 semana"],
-        "triage_pain_q4": "Valora el dolor ahora (0–10):",
         "triage_pain_q5": "¿Alguno de estos ahora?\n(Fiebre alta, Vómitos, Debilidad/entumecimiento, Habla/visión, Trauma, Ninguno)",
         "triage_pain_q5_opts": ["Fiebre alta", "Vómitos", "Debilidad/entumecimiento", "Habla/visión", "Trauma", "Ninguno"],
         "confirm_title": "Confirma si lo entendí bien:",
@@ -338,13 +315,11 @@ T = {
 def t(lang: str, key: str) -> str:
     return T.get(lang, T["en"]).get(key, T["en"].get(key, key))
 
-# =========================
-# Reply-keyboards (bottom)
-# =========================
+# ===== Reply-keyboards (bottom) =====
 BACK = "⬅️ Назад"
 CANCEL = "❌ Отмена"
 
-def _rkm(rows):  # helper
+def _rkm(rows):
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 def main_menu(lang: str) -> ReplyKeyboardMarkup:
@@ -352,34 +327,20 @@ def main_menu(lang: str) -> ReplyKeyboardMarkup:
     rows = [labels[:3], labels[3:]]
     return _rkm(rows)
 
-def kb_list_with_nav(options: list[str]) -> ReplyKeyboardMarkup:
-    per_row = 3 if len(options) >= 6 else 2
-    rows = [options[i:i+per_row] for i in range(0, len(options), per_row)]
-    rows.append([BACK, CANCEL])
-    return _rkm(rows)
-
 def kb_numbers_0_10() -> ReplyKeyboardMarkup:
     nums = [str(i) for i in range(11)]
-    rows = [nums[:6], nums[6:], [BACK, CANCEL]]
+    rows = [nums[:6], nums[6:], [CANCEL]]
     return _rkm(rows)
-
-def kb_confirm_bottom(lang: str) -> ReplyKeyboardMarkup:
-    return _rkm([
-        [t(lang, "confirm_ok")],
-        [t(lang, "confirm_change_loc"), t(lang, "confirm_change_kind")],
-        [t(lang, "confirm_change_duration"), t(lang, "confirm_change_severity")],
-        [BACK, CANCEL]
-    ])
 
 def kb_accept_bottom(lang: str) -> ReplyKeyboardMarkup:
     acc = T[lang]["accept_opts"]
-    return _rkm([acc, [BACK, CANCEL]])
+    return _rkm([acc, [CANCEL]])
 
 def kb_remind_bottom(lang: str) -> ReplyKeyboardMarkup:
     opts = T[lang]["remind_opts"]
     per_row = 2
     rows = [opts[i:i+per_row] for i in range(0, len(opts), per_row)]
-    rows.append([BACK, CANCEL])
+    rows.append([CANCEL])
     return _rkm(rows)
 
 def kb_yes_no(lang: str) -> ReplyKeyboardMarkup:
@@ -389,136 +350,34 @@ def kb_feedback_bottom(lang: str) -> ReplyKeyboardMarkup:
     return _rkm([[t(lang,"fb_like"), t(lang,"fb_dislike")], [t(lang,"fb_write")], [CANCEL]])
 
 # =========================
-# NLP — синонимы и парсинг
+# NLP helpers
 # =========================
-LOC_SYNS = {
-    "ru": {
-        "Head": ["голова","голове","висок","виски","лоб","затылок","темя","темечко"],
-        "Throat": ["горло","горле","гланды","миндалины"],
-        "Back": ["спина","поясница","позвоночник","лопатка","лопатке"],
-        "Belly": ["живот","желудок","кишки","кишечник","животе","желудке"],
-        "Chest": ["грудь","груди","грудине","грудной"],
-    },
-    "en": {
-        "Head": ["head","temple","forehead","occiput","back of head"],
-        "Throat": ["throat","tonsil","pharynx","sore throat"],
-        "Back": ["back","lower back","spine","shoulder blade","scapula"],
-        "Belly": ["belly","stomach","abdomen","tummy","gastric"],
-        "Chest": ["chest","sternum"],
-    },
-    "uk": {
-        "Head": ["голова","скроня","скроні","потилиця","лоб","тім’я","голові"],
-        "Throat": ["горло","мигдалики","глотка"],
-        "Back": ["спина","поперек","хребет","лопатка","лопатці"],
-        "Belly": ["живіт","шлунок","кишки","кишечник","животі","шлунку"],
-        "Chest": ["груди","груднина"],
-    },
-    "es": {
-        "Head": ["cabeza","sien","frente","nuca"],
-        "Throat": ["garganta","amígdala","amígdalas","faringe"],
-        "Back": ["espalda","lumbago","lumbar","columna","omóplato"],
-        "Belly": ["vientre","estómago","abdomen","barriga","panza"],
-        "Chest": ["pecho","esternón"],
-    },
-}
-
-KIND_SYNS = {
-    "ru": {
-        "Dull": ["тупая","тупой","ноющая","ноет","ломит"],
-        "Sharp": ["острая","острый","резкая","режущая","колющая","прострел"],
-        "Throbbing": ["пульсирующая","пульсирует","стучит"],
-        "Burning": ["жгучая","жжение","жжёт","жжет"],
-        "Pressing": ["давящая","давит","сжимает","жмёт"],
-    },
-    "en": {
-        "Dull": ["dull","aching","ache","sore"],
-        "Sharp": ["sharp","stabbing","cutting","knife","shooting","acute"],
-        "Throbbing": ["throbbing","pulsating","pounding"],
-        "Burning": ["burning","burn","scalding"],
-        "Pressing": ["pressing","tight","pressure","squeezing"],
-    },
-    "uk": {
-        "Dull": ["тупий","ниючий","ниє","ломить"],
-        "Sharp": ["гострий","різкий","колючий","ніж","простріл"],
-        "Throbbing": ["пульсівний","стукає","тремтить"],
-        "Burning": ["пекучий","печіння"],
-        "Pressing": ["тиснучий","тисне","стискає","давить"],
-    },
-    "es": {
-        "Dull": ["sordo","sorda"],
-        "Sharp": ["agudo","aguda","punzante","cortante"],
-        "Throbbing": ["palpitante","pulsátil","latente"],
-        "Burning": ["ardor","ardiente","quemazón"],
-        "Pressing": ["opresivo","opresión","aprieta"],
-    },
-}
-
 DUR_PATTERNS = {
     "ru": r"(\d+)\s*(мин|минут|час|часа|часов|сут|дн|дней|нед|недел)",
     "en": r"(\d+)\s*(min|mins|minute|minutes|hour|hours|day|days|week|weeks)",
     "uk": r"(\d+)\s*(хв|хвилин|год|годин|дн|днів|тижд|тижнів)",
     "es": r"(\d+)\s*(min|minutos|minuto|hora|horas|día|días|semana|semanas)",
 }
-
 SEVERITY_PATTERNS = [
     r"\b([0-9]|10)\s*/\s*10\b",
     r"\bна\s*([0-9]|10)\b",
     r"\b([0-9]|10)\s*из\s*10\b",
     r"\b([0-9]|10)\b",
 ]
-
-def _match_from_map(text: str, mapping: dict[str, list[str]]) -> str | None:
-    tl = text.lower()
-    for canon, syns in mapping.items():
-        for s in syns:
-            if s in tl:
-                return canon
-    return None
-
 def _match_duration(text: str, lang: str) -> str | None:
-    m = re.search(DUR_PATTERNS.get(lang, ""), text.lower())
+    m = re.search(DUR_PATTERNS.get(lang, ""), (text or "").lower())
     if not m: return None
-    num, unit = m.group(1), m.group(2)
-    return f"{num} {unit}"
-
+    return f"{m.group(1)} {m.group(2)}"
 def _match_severity(text: str) -> int | None:
-    tl = text.lower()
+    tl = (text or "").lower()
     for pat in SEVERITY_PATTERNS:
         m = re.search(pat, tl)
         if m:
             try:
                 val = int(m.group(1))
-                if 0 <= val <= 10:
-                    return val
+                if 0 <= val <= 10: return val
             except Exception:
                 pass
-    return None
-
-def extract_slots(text: str, lang: str) -> dict:
-    slots = {}
-    if not text: return slots
-    loc = _match_from_map(text, LOC_SYNS.get(lang, {}))
-    if loc: slots["loc"] = loc
-    kind = _match_from_map(text, KIND_SYNS.get(lang, {}))
-    if kind: slots["kind"] = kind
-    dur = _match_duration(text, lang)
-    if dur: slots["duration"] = dur
-    sev = _match_severity(text)
-    if sev is not None: slots["severity"] = sev
-    return slots
-
-def map_redflag_text(lang: str, text: str) -> str | None:
-    tl = (text or "").strip().lower()
-    none_words = {"ru": {"нет","ничего","none","не надо"},
-                  "en": {"none","no"},
-                  "uk": {"нема","ні","немає","none"},
-                  "es": {"ninguno","ninguna","no","none"}}
-    if tl in none_words.get(lang, set()):
-        return "None"
-    opts = T[lang]["triage_pain_q5_opts"]
-    for o in opts:
-        if o.lower() in tl:
-            return o
     return None
 
 # =========================
@@ -605,86 +464,84 @@ def schedule_from_sheet_on_start(app):
         app.job_queue.run_once(job_checkin, when=delay, data={"user_id": uid, "episode_id": eid})
 
 # =========================
-# Topic detection
+# Helpers: send-once (анти-дубль)
 # =========================
-TOPIC_KEYS = {
-    "en": {"Pain": "pain", "Throat/Cold": "throat", "Sleep": "sleep", "Stress": "stress", "Digestion": "digestion", "Energy": "energy"},
-    "ru": {"Боль": "pain", "Горло/простуда": "throat", "Сон": "sleep", "Стресс": "stress", "Пищеварение": "digestion", "Энергия": "energy"},
-    "uk": {"Біль": "pain", "Горло/застуда": "throat", "Сон": "sleep", "Стрес": "stress", "Травлення": "digestion", "Енергія": "energy"},
-    "es": {"Dolor": "pain", "Garganta/Resfriado": "throat", "Sueño": "sleep", "Estrés": "stress", "Digestión": "digestion", "Energía": "energy"},
-}
-
-def detect_or_choose_topic(lang: str, text: str) -> str | None:
-    tl = text.lower().strip()
-    if any(w in tl for w in ["болит","боль","hurt","pain","dolor","болю"]): return "pain"
-    if any(w in tl for w in ["горло","throat","garganta","простуд","cold"]): return "throat"
-    if any(w in tl for w in ["сон","sleep","sueñ"]): return "sleep"
-    if any(w in tl for w in ["стресс","stress","estrés"]): return "stress"
-    if any(w in tl for w in ["живот","желуд","живіт","стул","понос","диар","digest","estómago","barriga","abdomen"]): return "digestion"
-    if any(w in tl for w in ["энерг","енерг","energy","fatigue","слабость","energía","cansancio"]): return "energy"
-    for label, key in TOPIC_KEYS.get(lang, TOPIC_KEYS["en"]).items():
-        if text.strip() == label: return key
-    return None
+def send_once(uid: int, key: str, now_ts: float, cooldown: float = 8.0) -> bool:
+    s = sessions.setdefault(uid, {})
+    last = s.get("last_send", {})
+    ts = last.get(key, 0.0)
+    if now_ts - ts >= cooldown:
+        last[key] = now_ts
+        s["last_send"] = last
+        sessions[uid] = s
+        return True
+    return False
 
 # =========================
-# LLM hybrid parser (JSON → слоты)
+# GPT-5 CHAT ROUTER
 # =========================
-def parse_with_llm(text: str, lang_hint: str) -> dict:
-    if not oai or not text:
+def llm_chat_reply(uid: int, lang: str, user_text: str) -> dict:
+    """
+    Возвращает:
+    {
+      "assistant": "текст ответа для пользователя",
+      "slots": {"intent","loc","kind","duration","severity","red"},
+      "plan_ready": bool,
+      "escalate": bool
+    }
+    """
+    if not oai or not user_text:
         return {}
+
+    # компактная история (последние 8 сообщений)
+    s = sessions.setdefault(uid, {})
+    hist = s.setdefault("chat_history", [])[-8:]
     sys = (
-        "You are a triage extractor for a health self-care assistant. "
-        "Extract fields from user's text. Return ONLY a compact JSON object with keys: "
-        "intent, loc, kind, duration, severity, red_flags, lang, confidence. "
-        "Allowed values: intent in [pain, throat, sleep, stress, digestion, energy]; "
+        "You are TendAI, a warm health & self-care assistant. "
+        "Speak briefly (max 4 sentences), supportive, no diagnoses. "
+        "If you detect urgent red flags, advise medical help immediately. "
+        "Your task: both talk naturally AND extract triage fields. "
+        "Answer in user's language. "
+        "Return ONLY a JSON object with keys: "
+        "assistant (string), plan_ready (bool), escalate (bool), "
+        "slots (object with optional keys: intent in [pain, throat, sleep, stress, digestion, energy]; "
         "loc in [Head, Throat, Back, Belly, Chest, Other]; "
         "kind in [Dull, Sharp, Throbbing, Burning, Pressing]; "
-        "duration in [\"<3h\",\"3–24h\",\">1 day\",\">1 week\"]; "
-        "severity integer 0..10; red_flags subset of "
-        "[\"High fever\",\"Vomiting\",\"Weakness/numbness\",\"Speech/vision issues\",\"Trauma\"]. "
-        "lang in [ru,en,uk,es]. confidence 0..1. "
-        "If unknown, use nulls. Respond with JSON only."
+        "duration one of [\"<3h\",\"3–24h\",\">1 day\",\">1 week\"] or a human string; "
+        "severity int 0..10; "
+        "red one of [\"High fever\",\"Vomiting\",\"Weakness/numbness\",\"Speech/vision issues\",\"Trauma\",\"None\"])."
     )
+    msgs = [{"role": "system", "content": sys}]
+    for m in hist:
+        msgs.append(m)
+    msgs.append({"role": "user", "content": f"[lang={lang}] {user_text}"})
+
     try:
         resp = oai.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.0,
-            max_tokens=200,
-            messages=[
-                {"role": "system", "content": sys},
-                {"role": "user", "content": f"User text (lang hint {lang_hint}): {text}"},
-            ],
+            model="gpt-5",
+            temperature=0.2,
+            max_tokens=400,
+            messages=msgs,
         )
         raw = (resp.choices[0].message.content or "").strip()
-        m = re.search(r"\{[\s\S]*\}", raw)
-        data = json.loads(m.group(0)) if m else json.loads(raw)
-        if not isinstance(data, dict):
-            return {}
-        return data
+        j = None
+        try:
+            m = re.search(r"\{[\s\S]*\}", raw)
+            j = json.loads(m.group(0)) if m else json.loads(raw)
+        except Exception:
+            j = {"assistant": raw, "plan_ready": False, "escalate": False, "slots": {}}
+        # сохраняем в историю
+        hist.append({"role": "user", "content": user_text})
+        hist.append({"role": "assistant", "content": j.get("assistant","")})
+        s["chat_history"] = hist[-10:]
+        sessions[uid] = s
+        return j
     except Exception as e:
-        logging.warning(f"LLM parse failed: {e}")
+        logging.warning(f"LLM chat failed: {e}")
         return {}
 
-def normalize_llm_slots(data: dict, lang: str) -> dict:
-    slots = {}
-    if not data: return slots
-    if data.get("loc") in {"Head","Throat","Back","Belly","Chest","Other"}:
-        slots["loc"] = data["loc"]
-    if data.get("kind") in {"Dull","Sharp","Throbbing","Burning","Pressing"}:
-        slots["kind"] = data["kind"]
-    if data.get("duration") in {"<3h","3–24h",">1 day",">1 week"}:
-        slots["duration"] = data["duration"]
-    sev = data.get("severity")
-    if isinstance(sev, int) and 0 <= sev <= 10:
-        slots["severity"] = sev
-    r = data.get("red_flags") or []
-    if isinstance(r, list) and r:
-        allowed = {"High fever","Vomiting","Weakness/numbness","Speech/vision issues","Trauma","None"}
-        slots["red"] = next((x for x in r if x in allowed), None) or "None"
-    return slots
-
 # =========================
-# Plans / Hypotheses (простые правила)
+# Hypotheses & Plans
 # =========================
 def build_hypotheses(lang: str, ans: dict, zone: dict) -> list[tuple[str, float, str]]:
     loc = (ans.get("loc") or "").lower()
@@ -693,11 +550,9 @@ def build_hypotheses(lang: str, ans: dict, zone: dict) -> list[tuple[str, float,
     sev = int(ans.get("severity", 5))
     zq = zone.get("q", {}) if zone else {}
     H = []
-
     def add(name, score, because):
         H.append((name, float(score), because))
 
-    # Head
     if "head" in loc or "голова" in loc or "cabeza" in loc:
         if "throbb" in kind or "пульс" in kind:
             add("Migraine-like", 0.7 + 0.05*(sev>=6), "Throbbing + moderate/severe")
@@ -712,7 +567,6 @@ def build_hypotheses(lang: str, ans: dict, zone: dict) -> list[tuple[str, float,
         if zq.get(3) == "yes":
             add("Infection/meningeal concern", 0.9, "Neck stiffness/fever")
 
-    # Back
     if "back" in loc or "спина" in loc or "espalda" in loc:
         if "shoot" in kind or "прострел" in kind or zq.get(3) == "yes":
             add("Radicular pain (sciatica-like)", 0.7, "Shooting below knee/‘прострел’")
@@ -721,13 +575,11 @@ def build_hypotheses(lang: str, ans: dict, zone: dict) -> list[tuple[str, float,
         if zq.get(1) == "yes" or zq.get(2) == "yes":
             add("Serious back red flag", 0.95, "Perineal numbness/retention or trauma/fever/cancer")
 
-    # Belly
     if "belly" in loc or "живот" in loc or "abdomen" in loc or "vientre" in loc or "stomach" in loc:
         if "vomit" in (ans.get("red","") or "").lower():
             add("Gastroenteritis-like", 0.6, "Nausea/vomiting")
         add("Dyspepsia/gastritis-like", 0.5, "Common benign causes if no red flags")
 
-    # Chest
     if "chest" in loc or "груд" in loc or "pecho" in loc:
         if zq.get(1) == "yes":
             add("Possible cardiac pattern", 1.0, "Pressure >10min + dyspnea/sweat")
@@ -736,7 +588,6 @@ def build_hypotheses(lang: str, ans: dict, zone: dict) -> list[tuple[str, float,
         elif zq.get(3) == "yes":
             add("Respiratory infection", 0.6, "Cough/fever")
 
-    # Throat
     if "throat" in loc or "горло" in loc or "garganta" in loc:
         if zq.get(1) == "yes" and zq.get(2) == "no":
             add("Probable bacterial pharyngitis", 0.6, "Fever + exudate, no cough")
@@ -822,7 +673,6 @@ async def job_checkin(context: ContextTypes.DEFAULT_TYPE):
             text=t(lang, "checkin_ping"),
             reply_markup=kb_numbers_0_10(),
         )
-        # пометим режим чек-ина для on_text
         ss = sessions.setdefault(uid, {})
         ss["await_step"] = "checkin"
         ss["episode_id"] = eid
@@ -939,7 +789,6 @@ GREET_WORDS = {
     "uk": {"привіт", "вітаю"},
     "es": {"hola", "buenas"},
 }
-
 def maybe_autoswitch_lang(uid: int, text: str, cur_lang: str) -> str:
     if not text or text.startswith("/"):
         return cur_lang
@@ -965,26 +814,18 @@ def maybe_autoswitch_lang(uid: int, text: str, cur_lang: str) -> str:
     return cur_lang
 
 CARE_KEYWORDS = {
-    "en": {
-        "pain","headache","throat","cough","cold","fever","back","belly","stomach","chest",
-        "sleep","insomnia","stress","anxiety","energy","fatigue","digestion","diarrhea","constipation",
-        "nausea","vomit","symptom","medicine","ibuprofen","health","wellness"
-    },
-    "ru": {
-        "боль","болит","голова","головная","горло","кашель","простуда","температура","жар",
-        "спина","живот","желудок","грудь","сон","бессонница","стресс","тревога","энергия","слабость",
-        "пищеварение","диарея","понос","запор","тошнота","рвота","симптом","здоровье","ибупрофен"
-    },
-    "uk": {
-        "біль","болить","голова","горло","кашель","застуда","температура","жар","спина","живіт","шлунок",
-        "груди","сон","безсоння","стрес","тривога","енергія","слабкість","травлення","діарея","запор",
-        "нудота","блювання","симптом","здоров'я","ібупрофен"
-    },
-    "es": {
-        "dolor","cabeza","garganta","tos","resfriado","fiebre","espalda","vientre","estómago","pecho",
-        "sueño","insomnio","estrés","ansiedad","energía","cansancio","digestión","diarrea","estreñimiento",
-        "náusea","vómito","síntoma","salud","ibuprofeno"
-    },
+    "en": {"pain","headache","throat","cough","cold","fever","back","belly","stomach","chest",
+           "sleep","insomnia","stress","anxiety","energy","fatigue","digestion","diarrhea","constipation",
+           "nausea","vomit","symptom","medicine","ibuprofen","health","wellness"},
+    "ru": {"боль","болит","голова","горло","кашель","простуда","температура","жар","спина","живот","желудок","грудь",
+           "сон","бессонница","стресс","тревога","энергия","слабость","пищеварение","диарея","понос","запор",
+           "тошнота","рвота","симптом","здоровье","ибупрофен"},
+    "uk": {"біль","болить","голова","горло","кашель","застуда","температура","жар","спина","живіт","шлунок","груди",
+           "сон","безсоння","стрес","тривога","енергія","слабкість","травлення","діарея","запор","нудота",
+           "блювання","симптом","здоров'я","ібупрофен"},
+    "es": {"dolor","cabeza","garganta","tos","resfriado","fiebre","espalda","vientre","estómago","pecho","sueño",
+           "insomnio","estrés","ansiedad","energía","cansancio","digestión","diarrea","estreñimiento","náusea",
+           "vómito","síntoma","salud","ibuprofeno"},
 }
 def is_care_related(lang: str, text: str) -> bool:
     tl = (text or "").lower()
@@ -996,14 +837,6 @@ def is_care_related(lang: str, text: str) -> bool:
 # =========================
 # FLOW HELPERS
 # =========================
-def next_missing_step(ans: dict) -> int:
-    if "loc" not in ans: return 1
-    if "kind" not in ans: return 2
-    if "duration" not in ans: return 3
-    if "severity" not in ans: return 4
-    if "red" not in ans: return 5
-    return 0
-
 def render_confirm(lang: str, ans: dict) -> str:
     def val(k, default="—"):
         v = ans.get(k)
@@ -1017,53 +850,10 @@ def render_confirm(lang: str, ans: dict) -> str:
     ]
     return "\n".join(parts)
 
-async def send_step_question_bottom(message, lang: str, s: dict, step: int):
-    s["await_step"] = step
-    if step == 1:
-        await message.reply_text(t(lang, "triage_pain_q1"), reply_markup=kb_list_with_nav(T[lang]["triage_pain_q1_opts"]))
-    elif step == 2:
-        await message.reply_text(t(lang, "triage_pain_q2"), reply_markup=kb_list_with_nav(T[lang]["triage_pain_q2_opts"]))
-    elif step == 3:
-        await message.reply_text(t(lang, "triage_pain_q3"), reply_markup=kb_list_with_nav(T[lang]["triage_pain_q3_opts"]))
-    elif step == 4:
-        await message.reply_text(t(lang, "triage_pain_q4"), reply_markup=kb_numbers_0_10())
-    elif step == 5:
-        await message.reply_text(t(lang, "triage_pain_q5"), reply_markup=kb_list_with_nav(T[lang]["triage_pain_q5_opts"]))
-
-async def start_pain_triage(update: Update, lang: str, uid: int):
-    sessions[uid] = {"topic": "pain", "flow": "collect", "answers": {}}
-    await send_step_question_bottom(update.message, lang, sessions[uid], 1)
-
-async def proceed_to_confirm(message, lang: str, uid: int):
-    s = sessions.setdefault(uid, {})
-    ans = s.setdefault("answers", {})
-    text = render_confirm(lang, ans)
-    s["flow"] = "confirm"
-    s["await_step"] = 0
-    sessions[uid] = s
-    await message.reply_text(text, reply_markup=kb_confirm_bottom(lang))
-
-async def continue_collect(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str, uid: int, text_input: str):
-    # оставляем гибридный парсер на будущее, если начнем без кнопок
-    s = sessions.setdefault(uid, {"topic": "pain", "flow": "collect", "answers": {}})
-    ans = s.setdefault("answers", {})
-    llm_data = parse_with_llm(text_input, lang)
-    if llm_data and llm_data.get("confidence", 0) >= 0.5:
-        ans.update(normalize_llm_slots(llm_data, lang))
-    slots = extract_slots(text_input, lang)
-    for k, v in slots.items():
-        ans.setdefault(k, v)
-    if not ans:
-        await update.message.reply_text(t(lang, "open_prompt"))
-        return
-    sessions[uid] = s
-    await proceed_to_confirm(update.message, lang, uid)
-
 # =========================
-# Callback (совместимость, не используется в новом потоке)
+# Callback (совместимость)
 # =========================
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Оставлено для обратной совместимости, если старые сообщения с inline-кнопками ещё есть в чате.
     await update.callback_query.answer()
     await update.callback_query.message.reply_text("Обновление: используйте кнопки внизу 👇")
 
@@ -1090,9 +880,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = norm_lang(urec.get("lang") or getattr(user,"language_code",None))
         lang = maybe_autoswitch_lang(uid, text, lang)
 
-    s = sessions.get(uid, {})
+    s = sessions.setdefault(uid, {"flow": "chat", "answers": {}, "chat_history": []})
 
-    # Согласие на напоминания (нижние кнопки)
+    # Согласие на напоминания
     if s.get("awaiting_consent"):
         if text == CANCEL:
             s["awaiting_consent"] = False
@@ -1106,7 +896,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(lang, "use_buttons"))
         return
 
-    # Фидбек (нижние кнопки)
+    # Фидбек
     if s.get("awaiting_feedback_choice"):
         if text == CANCEL:
             s["awaiting_feedback_choice"] = False
@@ -1135,169 +925,57 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ws_feedback.append_row([datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), str(uid), f"comment:{name}", user.username or "", "", text])
         s["awaiting_comment"] = False
         s["feedback_context"] = ""
-        sessions[uid] = s
         await update.message.reply_text(t(lang, "comment_saved"), reply_markup=main_menu(lang))
         return
 
-    # простые приветы → меню
-    if text.lower() in {"hi","hello","hey","hola","привет","здравствуйте","привіт","вітаю","buenas"}:
-        await update.message.reply_text(t(lang, "welcome"), reply_markup=main_menu(lang))
-        return
-
-    # оффтоп?
-    if not is_care_related(lang, text):
-        await update.message.reply_text(t(lang, "oos"), reply_markup=main_menu(lang))
-        return
-
-    # ===== Нижние кнопки шагов триажа =====
-    if s.get("topic") == "pain" and s.get("await_step"):
-        step = s["await_step"]
-        ans = s.setdefault("answers", {})
-
-        # Навигация
+    # чек-ин режим
+    if s.get("await_step") == "checkin":
         if text == CANCEL:
-            sessions.pop(uid, None)
+            s["await_step"] = 0
             await update.message.reply_text(t(lang, "thanks"), reply_markup=main_menu(lang))
             return
-        if text == BACK:
-            prev = max(1, step - 1) if isinstance(step, int) else 1
-            await send_step_question_bottom(update.message, lang, s, prev)
-            return
-
-        # Шаг 1 — где болит (принимаем и свободный ввод)
-        if step == 1:
-            if text in T[lang]["triage_pain_q1_opts"]:
-                ans["loc"] = text
-            else:
-                slots = extract_slots(text, lang)
-                if slots.get("loc"):
-                    ans["loc"] = slots["loc"]
+        if text.isdigit() and 0 <= int(text) <= 10:
+            val = int(text)
+            ep = episode_find_open(uid)
+            if ep:
+                eid = ep.get("episode_id")
+                episode_set(eid, "notes", f"checkin:{val}")
+                if val <= 3:
+                    episode_set(eid, "status", "resolved")
+                    await update.message.reply_text(t(lang, "checkin_better"), reply_markup=main_menu(lang))
                 else:
-                    await update.message.reply_text(t(lang, "use_buttons")); return
-            s["await_step"] = 2
-            await send_step_question_bottom(update.message, lang, s, 2); return
-
-        # Шаг 2 — характер боли
-        if step == 2:
-            if text in T[lang]["triage_pain_q2_opts"]:
-                ans["kind"] = text
-            else:
-                slots = extract_slots(text, lang)
-                if slots.get("kind"):
-                    ans["kind"] = slots["kind"]
-                else:
-                    await update.message.reply_text(t(lang, "use_buttons")); return
-            s["await_step"] = 3
-            await send_step_question_bottom(update.message, lang, s, 3); return
-
-        # Шаг 3 — длительность
-        if step == 3:
-            if text in T[lang]["triage_pain_q3_opts"]:
-                ans["duration"] = text
-            else:
-                dur = _match_duration(text, lang)
-                if dur:
-                    ans["duration"] = dur
-                else:
-                    await update.message.reply_text(t(lang, "use_buttons")); return
-            s["await_step"] = 4
-            await send_step_question_bottom(update.message, lang, s, 4); return
-
-        # Шаг 4 — интенсивность 0–10
-        if step == 4:
-            sev = _match_severity(text) if not text.isdigit() else int(text)
-            if isinstance(sev, int) and 0 <= sev <= 10:
-                ans["severity"] = sev
-                s["await_step"] = 0
-                s["flow"] = "confirm"
-                await update.message.reply_text(render_confirm(lang, ans), reply_markup=kb_confirm_bottom(lang))
-                return
-            await update.message.reply_text(t(lang, "use_buttons")); return
-
-        # Шаг 5 — красные флаги
-        if step == 5:
-            rf = map_redflag_text(lang, text)
-            if rf:
-                ans["red"] = rf
-                s["await_step"] = 0
-                # зона опустим; сразу план
-                zname = "general"
-                s["zone"] = {"name": zname, "idx": 1, "q": {}}
-                hyps = build_hypotheses(lang, ans, s.get("zone", {}))
-                eid = s.get("episode_id") or episode_create(uid, "pain", int(ans.get("severity",5)), ans.get("red","None"))
-                s["episode_id"] = eid
-                plan_lines = pain_plan(lang, ans, s.get("zone", {}), hyps)
-                await update.message.reply_text(f"{t(lang,'plan_header')}\n" + "\n".join(plan_lines))
-                await update.message.reply_text(t(lang, "plan_accept"), reply_markup=kb_accept_bottom(lang))
-                s["flow"] = "accept_wait"
-                return
-            await update.message.reply_text(t(lang, "use_buttons")); return
-
-        # чек-ин — ловим здесь же
-        if step == "checkin":
-            if text.isdigit() and 0 <= int(text) <= 10:
-                val = int(text)
-                ep = episode_find_open(uid)
-                if ep:
-                    eid = ep.get("episode_id")
-                    episode_set(eid, "notes", f"checkin:{val}")
-                    if val <= 3:
-                        episode_set(eid, "status", "resolved")
-                        await update.message.reply_text(t(lang, "checkin_better"), reply_markup=main_menu(lang))
-                    else:
-                        await update.message.reply_text(t(lang, "checkin_worse"), reply_markup=main_menu(lang))
-                s["await_step"] = 0
-                return
-            await update.message.reply_text(t(lang, "use_buttons")); return
-
-    # Подтверждение (нижние кнопки)
-    if s.get("topic") == "pain" and s.get("flow") == "confirm":
-        ans = s.setdefault("answers", {})
-        if text == t(lang, "confirm_ok"):
-            s["flow"] = "redflags"
-            await send_step_question_bottom(update.message, lang, s, 5)
+                    await update.message.reply_text(t(lang, "checkin_worse"), reply_markup=main_menu(lang))
+            s["await_step"] = 0
             return
-        map_change = {
-            t(lang,"confirm_change_loc"): 1,
-            t(lang,"confirm_change_kind"): 2,
-            t(lang,"confirm_change_duration"): 3,
-            t(lang,"confirm_change_severity"): 4,
-        }
-        if text in map_change:
-            await send_step_question_bottom(update.message, lang, s, map_change[text])
-            return
-        if text in (BACK, CANCEL):
-            await update.message.reply_text(t(lang, "use_buttons"), reply_markup=main_menu(lang))
-            return
+        await update.message.reply_text(t(lang, "use_buttons")); return
 
-    # Принятие плана (нижние кнопки)
-    if s.get("topic") == "pain" and s.get("flow") == "accept_wait":
+    # принятие плана
+    if s.get("flow") == "accept_wait":
         acc = T[lang]["accept_opts"]
-        if text in acc:
-            choice = text
+        if text in acc or text == CANCEL:
             eid = s.get("episode_id")
-            if choice == acc[0]:
+            if text == acc[0]:
                 episode_set(eid, "plan_accepted", "1")
-            elif choice == acc[1]:
+            elif text == acc[1]:
                 episode_set(eid, "plan_accepted", "later")
-            else:
+            elif text == acc[2]:
                 episode_set(eid, "plan_accepted", "0")
             s["flow"] = "remind_wait"
             await update.message.reply_text(t(lang, "remind_when"), reply_markup=kb_remind_bottom(lang))
             return
         await update.message.reply_text(t(lang, "use_buttons")); return
 
-    # Настройка напоминания (нижние кнопки)
-    if s.get("topic") == "pain" and s.get("flow") == "remind_wait":
+    # настройка напоминания
+    if s.get("flow") == "remind_wait":
         opts = T[lang]["remind_opts"]
-        if text in opts:
+        if text in opts or text == CANCEL:
             code_map = {
                 opts[0]: "4h",
                 opts[1]: "evening",
                 opts[2]: "morning",
                 opts[3]: "none",
             }
-            code = code_map[text]
+            code = code_map.get(text, "none")
             eid = s.get("episode_id")
             urec = users_get(uid)
             tz_off = 0
@@ -1323,14 +1001,62 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await update.message.reply_text(t(lang, "use_buttons")); return
 
-    # Новая тема → триаж
-    topic = detect_or_choose_topic(lang, text) or "pain"
-    if topic in {"pain","throat","sleep","stress","digestion","energy"}:
-        await start_pain_triage(update, lang, uid)
+    # ===== CHAT-FIRST на GPT-5 =====
+    # если совсем оффтоп — один мягкий ответ и меню
+    if not is_care_related(lang, text):
+        if send_once(uid, key="oos", now_ts=time()):
+            await update.message.reply_text(t(lang, "oos"), reply_markup=main_menu(lang))
         return
 
-    # Фолбэк
-    await update.message.reply_text(t(lang, "unknown"), reply_markup=main_menu(lang))
+    # обращаемся к модели
+    j = llm_chat_reply(uid, lang, text)
+    if not j:
+        # фолбэк: краткая просьба уточнить
+        await update.message.reply_text(t(lang, "unknown"), reply_markup=main_menu(lang))
+        return
+
+    assistant_text = j.get("assistant") or ""
+    slots = j.get("slots") or {}
+    plan_ready = bool(j.get("plan_ready"))
+    escalate = bool(j.get("escalate"))
+
+    # отправляем человеческий ответ
+    if assistant_text:
+        await update.message.reply_text(assistant_text)
+
+    # обновляем ответы
+    ans = s.setdefault("answers", {})
+    for k in ["intent","loc","kind","duration","severity","red"]:
+        v = slots.get(k)
+        if v is not None and v != "":
+            ans[k] = v
+    sessions[uid] = s
+
+    # если эскалация — завершаем
+    if escalate:
+        # короткая подсказка уже есть в assistant_text; просто вернём меню
+        await update.message.reply_text(t(lang, "thanks"), reply_markup=main_menu(lang))
+        return
+
+    # если готовы к плану (по мнению модели) или у нас есть все поля
+    have_all = all(k in ans for k in ["loc","kind","duration","severity","red"])
+    if plan_ready or have_all:
+        # создаём эпизод при необходимости
+        eid = s.get("episode_id")
+        if not eid:
+            eid = episode_create(uid, ans.get("intent","pain"), int(ans.get("severity",5)), ans.get("red","None"))
+            s["episode_id"] = eid
+        # гипотезы + план
+        hyps = build_hypotheses(lang, ans, s.get("zone", {}))
+        plan_lines = pain_plan(lang, ans, s.get("zone", {}), hyps)
+        await update.message.reply_text(f"{t(lang,'plan_header')}\n" + "\n".join(plan_lines))
+        await update.message.reply_text(t(lang, "plan_accept"), reply_markup=kb_accept_bottom(lang))
+        s["flow"] = "accept_wait"
+        return
+
+    # иначе — остаёмся в беседе (модель уже задала следующий вопрос)
+    s["flow"] = "chat"
+    sessions[uid] = s
 
 # =========================
 # Runner
@@ -1350,8 +1076,7 @@ def main():
     app.add_handler(CommandHandler("skip", cmd_skip))
     app.add_handler(CommandHandler("feedback", cmd_feedback))
 
-    # Совместимость с инлайн-колбэками из старых сообщений
-    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(CallbackQueryHandler(on_callback))  # совместимость
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
