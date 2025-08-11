@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-TendAI — чат-первый ассистент здоровья и долголетия
-Динамический язык: бот отвечает на языке КАЖДОГО текущего сообщения (ru/en/uk/es).
+TendAI — чат-первый ассистент здоровья и долголетия.
+Динамический язык на КАЖДОЕ сообщение (ru/en/uk/es).
+Интро-опрос (6 вопросов), живой диалог (LLM), чек-ины.
+Отзывы: кнопки 👍/👎 + текстовый комментарий, лог в Google Sheets (Feedback).
 """
 
 import os, re, json, uuid, logging, hashlib, time
@@ -42,7 +44,7 @@ logging.basicConfig(
 
 TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # поставь свой (GPT-5 Thinking), если доступен
+OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 SHEET_NAME      = os.getenv("SHEET_NAME", "TendAI Feedback")
 
 if not TELEGRAM_TOKEN:
@@ -119,7 +121,9 @@ T = {
         "plan_try":"Попробуете сегодня? Напишите: «да», «позже» или «нет».",
         "remind_when":"Когда напомнить: «через 4 часа», «вечером», «завтра утром» или «не надо»?",
         "remind_ok":"Принято 🙌",
-        "feedback_hint":"Если было полезно — можно отправить 👍 или 👎, и при желании написать короткий отзыв.",
+        "feedback_hint":"Если было полезно — нажмите 👍 или 👎, и при желании напишите короткий отзыв.",
+        "fb_comment_btn":"✍️ Написать отзыв",
+        "fb_saved":"Отзыв сохранён 🙌",
         "deleted":"✅ Данные удалены. /start — начать заново.",
         "intake_offer":"Чтобы дать более точный и персональный ответ, заполните короткий опрос (6 вопросов, ~40 сек). Начать сейчас?",
         "intake_yes":"Да, начать",
@@ -145,7 +149,9 @@ T = {
         "plan_try":"Will you try this today? Reply: “yes”, “later” or “no”.",
         "remind_when":"When should I check in: “in 4h”, “this evening”, “tomorrow morning” or “no need”?",
         "remind_ok":"Got it 🙌",
-        "feedback_hint":"If this helped, send 👍 or 👎, and add a short comment if you like.",
+        "feedback_hint":"If this helped, tap 👍 or 👎, and add a short comment if you like.",
+        "fb_comment_btn":"✍️ Add a comment",
+        "fb_saved":"Feedback saved 🙌",
         "deleted":"✅ Data deleted. /start to begin again.",
         "intake_offer":"To give a more precise, personalized answer, please complete a short intake (6 quick questions, ~40s). Start now?",
         "intake_yes":"Yes, start",
@@ -171,7 +177,9 @@ T = {
         "plan_try":"Спробуєте сьогодні? Відповідь: «так», «пізніше» або «ні».",
         "remind_when":"Коли нагадати: «через 4 год», «увечері», «завтра вранці» чи «не треба»?",
         "remind_ok":"Прийнято 🙌",
-        "feedback_hint":"Якщо було корисно — надішліть 👍 або 👎 і короткий коментар.",
+        "feedback_hint":"Якщо було корисно — натисніть 👍 або 👎 і, за бажання, напишіть короткий відгук.",
+        "fb_comment_btn":"✍️ Написати відгук",
+        "fb_saved":"Відгук збережено 🙌",
         "deleted":"✅ Дані видалено. /start — почати знову.",
         "intake_offer":"Щоб дати точнішу персональну відповідь, заповніть коротке опитування (6 питань, ~40 с). Почати зараз?",
         "intake_yes":"Так, почати",
@@ -197,7 +205,9 @@ T = {
         "plan_try":"¿Lo intentas hoy? Responde: «sí», «más tarde» o «no».",
         "remind_when":"¿Cuándo te escribo: «en 4 h», «esta tarde», «mañana por la mañana» o «no hace falta»?",
         "remind_ok":"¡Hecho! 🙌",
-        "feedback_hint":"Si te ayudó, envía 👍 o 👎 y, si quieres, un breve comentario.",
+        "feedback_hint":"Si te ayudó, pulsa 👍 o 👎 y, si quieres, escribe un breve comentario.",
+        "fb_comment_btn":"✍️ Escribir comentario",
+        "fb_saved":"Comentario guardado 🙌",
         "deleted":"✅ Datos borrados. /start para empezar de nuevo.",
         "intake_offer":"Para darte una respuesta más precisa y personal, completa un breve cuestionario (6 preguntas, ~40 s). ¿Empezar ahora?",
         "intake_yes":"Sí, empezar",
@@ -225,37 +235,27 @@ ES_MARKERS = set("ñÑ¡¿áéíóúÁÉÍÓÚ")
 
 def guess_lang_heuristic(text: str) -> str | None:
     if not text: return None
-    # явные маркеры испанского
-    if any(ch in ES_MARKERS for ch in text):
-        return "es"
+    if any(ch in ES_MARKERS for ch in text): return "es"
     tl = text.lower()
     if any(w in tl for w in ["hola","buenas","gracias","por favor","mañana","ayer","dolor","tengo"]):
         return "es"
-    # кириллица → ru/uk
     if CYR.search(text):
-        if any(ch in UK_MARKERS for ch in text):
-            return "uk"
-        # простая эвристика
-        if any(w in tl for w in ["привіт","будь ласка","дякую","болить"]):
-            return "uk"
+        if any(ch in UK_MARKERS for ch in text): return "uk"
+        if any(w in tl for w in ["привіт","будь ласка","дякую","болить"]): return "uk"
         return "ru"
     return None
 
 def detect_lang_per_message(text: str, profile_lang: str = "en") -> str:
-    # 1) сильная эвристика
     h = guess_lang_heuristic(text)
     if h: return h
-    # 2) langdetect (если есть)
     if detect:
         try:
             return norm_lang(detect(text))
         except Exception:
             pass
-    # 3) слова-признаки для en
     tl = (text or "").lower()
     if any(w in tl for w in ["hello","hi","i have","pain","headache","throat","back"]):
         return "en"
-    # 4) дефолт
     return norm_lang(profile_lang)
 
 # =========================
@@ -308,6 +308,14 @@ def kb_intake_q(lang: str, qnum: int):
     if buf: rows.append(buf)
     rows.append([InlineKeyboardButton(t(lang,"intake_no"), callback_data="intake|skip")])
     return InlineKeyboardMarkup(rows)
+
+# ===== Feedback keyboard =====
+def kb_feedback(lang: str):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("👍", callback_data="fb|rate|1"),
+        InlineKeyboardButton("👎", callback_data="fb|rate|0"),
+        InlineKeyboardButton(t(lang,"fb_comment_btn"), callback_data="fb|write"),
+    ]])
 
 # =========================
 # Sheets helpers
@@ -544,15 +552,10 @@ async def on_startup(app):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
-    # дефолтный язык — профиль Телеграм (для первого приветствия)
     lang = users_get(uid).get("lang") or norm_lang(getattr(user,"language_code",None))
     if not users_get(uid):
         users_upsert(uid, user.username or "", lang)
-
-    # Привет + спрятать нижнюю клавиатуру
     await update.message.reply_text(f"{t(lang,'welcome')}\n{t(lang,'help')}", reply_markup=ReplyKeyboardRemove())
-
-    # Сессия
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
     s["intake_offered"] = True
     s["last_lang"] = lang
@@ -597,14 +600,14 @@ async def cmd_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    lang = sessions.get(uid, {}).get("last_lang") or users_get(uid).get("lang") or norm_lang(getattr(update.effective_user,"language_code",None))
     s = sessions.setdefault(uid,{})
-    s["awaiting_comment"]=True
-    s["feedback_context"]= s.get("feedback_context") or "manual"
-    await update.message.reply_text("Напишите короткий отзыв одним сообщением. Можно также просто отправить 👍 или 👎.")
+    s["awaiting_comment"]=False
+    s["feedback_context"]= "manual"
+    await update.message.reply_text(t(lang,"feedback_hint"), reply_markup=kb_feedback(lang))
 
 async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    # язык берём из ПОСЛЕДНЕГО сообщения, либо базовый
     base = sessions.get(uid, {}).get("last_lang") or users_get(uid).get("lang") or norm_lang(getattr(update.effective_user,"language_code",None))
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
     s["mode"]="intake"; s["intake"]={"q":1, "ans":{}}
@@ -617,7 +620,7 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ок, пропустили.")
 
 # =========================
-# Callback (intake) — язык берём из last_lang
+# Callback (intake & feedback)
 # =========================
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -625,8 +628,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
     lang = s.get("last_lang") or users_get(uid).get("lang") or norm_lang(getattr(q.from_user,"language_code",None))
-
     data = (q.data or "")
+
+    # ---- Feedback buttons ----
+    if data.startswith("fb|"):
+        parts = data.split("|")
+        action = parts[1] if len(parts)>1 else ""
+        if action == "rate":
+            val = parts[2] if len(parts)>2 else ""
+            ctx_label = s.get("feedback_context") or "chat"
+            if val in {"1","0"}:
+                save_feedback(uid, q.from_user.username or "", ctx_label, val, "")
+                txt = {"ru":"Спасибо!","uk":"Дякую!","es":"¡Gracias!","en":"Thanks!"}[lang]
+                try: await q.edit_message_reply_markup(reply_markup=None)
+                except Exception: pass
+                await q.message.reply_text(txt)
+                return
+        if action == "write":
+            s["awaiting_comment"] = True
+            s["feedback_context"] = s.get("feedback_context") or "chat"
+            try: await q.edit_message_reply_markup(reply_markup=None)
+            except Exception: pass
+            await q.message.reply_text({"ru":"Напишите короткий отзыв одним сообщением.",
+                                        "uk":"Напишіть короткий відгук одним повідомленням.",
+                                        "es":"Escribe un breve comentario en un mensaje.",
+                                        "en":"Please send a short comment in one message."}[lang])
+            return
+        return
+
+    # ---- Intake ----
     if not data.startswith("intake|"):
         return
 
@@ -667,7 +697,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
 # =========================
-# Text handler — ЯДРО: язык определяется на КАЖДОЕ сообщение
+# Text handler — ядро
 # =========================
 THUMBS_UP = {"👍","👍🏻","👍🏼","👍🏽","👍🏾","👍🏿"}
 THUMBS_DOWN = {"👎","👎🏻","👎🏼","👎🏽","👎🏾","👎🏿"}
@@ -715,28 +745,22 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
     text = (update.message.text or "").strip()
 
-    # базовый профильный язык (для случая пустого текста)
     base = users_get(uid).get("lang") or norm_lang(getattr(user,"language_code",None)) or "en"
-    # динамический язык СЕЙЧАС
     msg_lang = detect_lang_per_message(text, base)
-    # сохранить последний язык в сессии (для коллбеков)
+
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
     s["last_lang"] = msg_lang
 
-    # если новый пользователь — сохраним базовый (не мешает динамическому)
     if not users_get(uid):
         users_upsert(uid, user.username or "", base)
 
-    # спрячем старые нижние клавиатуры на привет
     if text.lower() in GREETINGS and not s.get("intake_offered"):
         await update.message.reply_text(t(msg_lang,"welcome"), reply_markup=ReplyKeyboardRemove())
 
-    # предложить опрос — один раз за сессию
     if not s.get("intake_offered"):
         s["intake_offered"] = True
         await update.message.reply_text(t(msg_lang,"intake_offer"), reply_markup=kb_intake_offer(msg_lang))
 
-    # Intake: ждём возраст (Q1)
     if s.get("mode") == "intake" and s.get("intake",{}).get("q") == 1:
         m = re.fullmatch(r"\s*(\d{1,3})\s*", text)
         if not m:
@@ -750,7 +774,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(msg_lang,"intake_q2"), reply_markup=kb_intake_q(msg_lang,2))
         return
 
-    # Отзывы: 👍/👎 и текст
+    # Отзывы emoji
     if text in THUMBS_UP:
         ctx_label = get_feedback_context(uid)
         save_feedback(uid, user.username or "", ctx_label, "1", "")
@@ -763,7 +787,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ctx_label = get_feedback_context(uid)
         save_feedback(uid, user.username or "", ctx_label, "", text)
         s["awaiting_comment"]=False
-        await update.message.reply_text({"ru":"Отзыв сохранён 🙌","uk":"Відгук збережено 🙌","es":"Comentario guardado 🙌","en":"Feedback saved 🙌"}[msg_lang])
+        await update.message.reply_text(t(msg_lang,"fb_saved"))
         return
 
     # Согласие на чек-ины
@@ -794,7 +818,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text({"ru":"Понимаю. Если появятся красные флаги — лучше обратиться к врачу.","uk":"Розумію. Якщо з’являться «червоні прапорці» — зверніться до лікаря.","es":"Entiendo. Si aparecen señales de alarma, consulta a un médico.","en":"I hear you. If red flags appear, please seek medical care."}[msg_lang])
         s["mode"]="chat"
         if feedback_prompt_needed(uid):
-            await update.message.reply_text(t(msg_lang,"feedback_hint"))
+            await update.message.reply_text(t(msg_lang,"feedback_hint"), reply_markup=kb_feedback(msg_lang))
         return
 
     # Подтверждение плана
@@ -814,7 +838,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             s["mode"]="chat"
             await update.message.reply_text({"ru":"Ок, без плана. Давай просто отслеживать самочувствие.","uk":"Добре, без плану. Відстежимо самопочуття.","es":"De acuerdo, sin plan. Revisemos cómo sigues.","en":"Alright, no plan. We’ll just track how you feel."}[msg_lang])
             if feedback_prompt_needed(uid):
-                await update.message.reply_text(t(msg_lang,"feedback_hint"))
+                await update.message.reply_text(t(msg_lang,"feedback_hint"), reply_markup=kb_feedback(msg_lang))
             return
         await update.message.reply_text({"ru":"Ответьте «да», «позже» или «нет».","uk":"Відповідайте «так», «пізніше» або «ні».","es":"Responde «sí», «más tarde» o «no».","en":"Please reply “yes”, “later” or “no”."}[msg_lang])
         return
@@ -848,15 +872,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(msg_lang,"remind_ok"))
         s["mode"]="chat"
         if feedback_prompt_needed(uid):
-            await update.message.reply_text(t(msg_lang,"feedback_hint"))
+            await update.message.reply_text(t(msg_lang,"feedback_hint"), reply_markup=kb_feedback(msg_lang))
         return
 
-    # Если пользователь пишет во время незавершённого intake (кроме Q1) — просим кнопки
     if s.get("mode") == "intake":
         await update.message.reply_text(t(msg_lang,"use_buttons"))
         return
 
-    # Экстренные фразы — не блокируем
     if urgent_from_text(text):
         esc = {"ru":"⚠️ Если есть высокая температура, одышка, боль в груди или односторонняя слабость — обратитесь к врачу.",
                "en":"⚠️ If high fever, shortness of breath, chest pain or one-sided weakness — seek medical care.",
@@ -864,10 +886,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                "es":"⚠️ Si hay fiebre alta, falta de aire, dolor torácico o debilidad de un lado — acude a un médico."}[msg_lang]
         await send_nodup(uid, esc, update.message.reply_text)
 
-    # CHAT-FIRST (LLM) — ОТВЕТ НА ЯЗЫКЕ ТЕКУЩЕГО СООБЩЕНИЯ
+    # CHAT-FIRST (LLM)
     data = llm_chat(uid, msg_lang, text)
     if not data:
-        # мягкий фолбэк
         if msg_lang=="ru":
             await update.message.reply_text("Понимаю. Где именно ощущаете и как давно началось? Если можно — оцените 0–10.")
         elif msg_lang=="uk":
@@ -921,11 +942,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                "es":"⚠️ Si hay fiebre alta, falta de aire, dolor torácico o debilidad de un lado — acude a un médico."}[msg_lang]
         await send_nodup(uid, esc, update.message.reply_text)
         if feedback_prompt_needed(uid):
-            await update.message.reply_text(t(msg_lang,"feedback_hint"))
+            await update.message.reply_text(t(msg_lang,"feedback_hint"), reply_markup=kb_feedback(msg_lang))
         return
 
     if na == "ask_feedback" and feedback_prompt_needed(uid):
-        await update.message.reply_text(t(msg_lang,"feedback_hint"))
+        await update.message.reply_text(t(msg_lang,"feedback_hint"), reply_markup=kb_feedback(msg_lang))
         return
 
     s["mode"]="chat"; sessions[uid]=s
@@ -949,7 +970,7 @@ def main():
     app.add_handler(CommandHandler("intake", cmd_intake))
     app.add_handler(CommandHandler("skip", cmd_skip))
 
-    app.add_handler(CallbackQueryHandler(on_callback))  # intake кнопки
+    app.add_handler(CallbackQueryHandler(on_callback))  # intake + feedback кнопки
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
