@@ -1,735 +1,431 @@
-#!/usr/bin/env python3
+# Create a new, LLM-powered Telegram bot with a professional health & longevity assistant style.
+# - No bottom keyboards.
+# - Short 40-second intake in one message; free-text parsing via OpenAI.
+# - Professional triage, safety red flags, and concise plans.
+# - Multilingual heuristic (ru/en/uk/es) with RU default if Cyrillic detected.
+# - Uses python-telegram-bot v20+ and openai python client.
+# - Includes /start /reset /profile /plan /privacy commands.
+# - Robust fallback if the LLM errors.
+# The file is saved to /mnt/data/main_pro.py
+
+code = r'''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TendAI MVP bot core (rules-first, low-cost)
-Implements:
-1) Intent router (KW-based) for: assessment, longevity, nutrition, sleep, activity, labs, symptom, other
-2) Flexible parsing: extracts numbers from text; gentle 0–10 prompt only when relevant
-3) Slots + non-linear answers (symptom: where, character, duration, intensity)
-4) Fallback with 1 clarifying Q + 3 quick topics; anti-loop (no >2 same msgs)
-5) Dialogue memory (user_state): intent, slots, lang, last 3 user msgs; 30-min timeout with soft resume
-6) Auto language detect (ru/en/uk/es), fixed per session; templates per language
-7) Short templates (≤3 lines + 1 clarifying Q)
-8) Safety red flags → ER/911 advice immediately
-9) Logging & telemetry (stdout + CSV at /mnt/data/telemetry.csv)
-10) Mini-tests (run with RUN_TESTS=1)
+TendAI Pro (LLM-powered) — Professional Health & Longevity Assistant
+Requirements:
+  - python-telegram-bot >= 20
+  - openai >= 1.0.0
+Environment:
+  TELEGRAM_TOKEN=<your token>
+  OPENAI_API_KEY=<your key>
+
+Design goals:
+- Free, professional answers (no bottom keyboards).
+- Fast 40-second intake: one compact questionnaire; user replies in free text.
+- Parse intake & later messages to a structured profile via LLM JSON-extraction.
+- Triage-first with red-flag detection; concise action steps; disclaimers.
+- Multilingual (ru/en/uk/es) heuristic detection; answer in user language.
+- Memory: per-user in RAM (intent/profile/history). Replace with DB for prod.
 """
+
 import os
 import re
-import csv
+import json
 import time
 import logging
-from datetime import datetime, timedelta
-from collections import deque, defaultdict
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, List, Optional, Tuple
+from collections import defaultdict, deque
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from telegram.ext import (
-    ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, filters
-)
+from telegram import Update, ReplyKeyboardRemove
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# -------------------------- CONFIG --------------------------
+from openai import OpenAI
+
+# --------------------- CONFIG ---------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN_HERE")
-SESSION_TIMEOUT_SEC = 30 * 60  # 30 minutes
-MAX_LAST_USER_MSGS = 3
-MAX_LAST_BOT_MSGS = 2
-TELEMETRY_CSV = os.getenv("TELEMETRY_CSV", "/mnt/data/telemetry.csv")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY_HERE")
+
+SESSION_TIMEOUT_SEC = 30 * 60  # 30 minutes of inactivity -> soft resume
+MAX_HISTORY = 12              # keep last N user/bot turns
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # cheap & capable; adjust as needed
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=logging.INFO
 )
-logger = logging.getLogger("tendai-bot")
+logger = logging.getLogger("tendai-pro")
 
-# In-memory user states: user_id -> state dict
-USER_STATES: Dict[int, Dict[str, Any]] = defaultdict(dict)
+# --------------------- GLOBAL STATE ---------------------
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-# -------------- HELPERS: LANGUAGE & INTENT ------------------
-def detect_lang(text: str) -> str:
-    """Heuristic language detection for ru/en/uk/es."""
-    t = text.strip().lower()
-    if not t:
-        return "en"
-    uk_chars = set("іїєґ")
-    ru_chars = set("ыэёъ")
-    es_markers = ["¿", "¡", "ñ", "á", "é", "í", "ó", "ú"]
-    if any(ch in t for ch in uk_chars) or "привіт" in t or "будь ласка" in t:
-        return "uk"
-    if any(ch in t for ch in ru_chars) or "здравствуйте" in t or "привет" in t:
-        return "ru"
-    if any(ch in t for ch in es_markers) or any(w in t for w in ["hola", "gracias", "salud", "dolor", "días", "semanas", "horas"]):
-        return "es"
-    # Default guess
-    return "en"
+USER: Dict[int, Dict[str, Any]] = defaultdict(dict)
 
-INTENTS = ["assessment", "longevity", "nutrition", "sleep", "activity", "labs", "symptom", "other"]
-
-KW = {
-    "ru": {
-        "assessment": ["оценка", "самочувств", "насколько", "шкала"],
-        "longevity": ["долголет", "прожить дольше", "здоровое старение"],
-        "nutrition": ["питание", "еда", "рацион", "калори", "белок", "жир", "углевод"],
-        "sleep": ["сон", "спать", "засып", "просып", "режим сна"],
-        "activity": ["активн", "шаг", "трениров", "спорт", "упражнен"],
-        "labs": ["анализ", "лаборатор", "кровь", "биомаркер", "тест"],
-        "symptom": ["болит", "боль", "симптом", "тупая", "острая", "жгуч", "пульсир", "голова", "спина", "груд", "живот", "горло", "сустав", "ног", "рук", "плеч"],
-    },
-    "en": {
-        "assessment": ["rate", "rating", "scale", "how are you", "how do you feel"],
-        "longevity": ["longevity", "live longer", "healthspan", "anti-aging"],
-        "nutrition": ["diet", "nutrition", "calorie", "protein", "fat", "carb", "meal"],
-        "sleep": ["sleep", "bedtime", "wake", "insomnia", "nap"],
-        "activity": ["steps", "exercise", "workout", "gym", "activity"],
-        "labs": ["labs", "bloodwork", "biomarker", "test"],
-        "symptom": ["pain", "ache", "hurts", "headache", "back", "chest", "stomach", "throat", "joint", "leg", "arm", "shoulder", "dull", "sharp", "burning", "throbbing"],
-    },
-    "es": {
-        "assessment": ["evaluación", "escala", "cómo te sientes", "califica"],
-        "longevity": ["longevidad", "vivir más", "anti envejecimiento", "salud a largo plazo"],
-        "nutrition": ["nutrición", "dieta", "calorías", "proteína", "grasa", "carbo"],
-        "sleep": ["sueño", "dormir", "hora de dormir", "insomnio", "siesta"],
-        "activity": ["pasos", "ejercicio", "entrenamiento", "actividad"],
-        "labs": ["análisis", "sangre", "biomarcador", "prueba"],
-        "symptom": ["dolor", "me duele", "cabeza", "espalda", "pecho", "estómago", "garganta", "articulación", "pierna", "brazo", "hombro", "sordo", "agudo", "ardor", "pulsátil"],
-    },
-    "uk": {
-        "assessment": ["оцінка", "самопочуття", "наскільки", "шкала"],
-        "longevity": ["довголіт", "жити довше", "здорове старіння"],
-        "nutrition": ["харчуван", "дієта", "каллор", "білок", "жир", "вуглевод"],
-        "sleep": ["сон", "спати", "засин", "прокид", "режим сну"],
-        "activity": ["активн", "крок", "тренув", "спорт", "вправ"],
-        "labs": ["аналіз", "лаборатор", "кров", "біомаркер", "тест"],
-        "symptom": ["болить", "біль", "симптом", "тупий", "гострий", "пекучий", "пульсуючий", "голова", "спина", "груди", "живіт", "горло", "суглоб", "нога", "рука", "плече"],
-    },
+SAFETY_RED_FLAGS = {
+    "ru": [
+        "сильная боль в груди", "одышка", "кровь в стуле", "кровь в моче", "слабость одной стороны",
+        "паралич", "затруднённая речь", "обморок", "травма головы", "температура выше 39", "температура выше 39.5"
+    ],
+    "en": [
+        "severe chest pain", "shortness of breath", "blood in stool", "blood in urine", "weakness on one side",
+        "paralysis", "slurred speech", "fainting", "head injury", "fever over 103", "fever above 103"
+    ],
+    "es": [
+        "dolor fuerte en el pecho", "falta de aire", "sangre en heces", "sangre en orina", "debilidad de un lado",
+        "parálisis", "habla arrastrada", "desmayo", "lesión en la cabeza", "fiebre de más de 39"
+    ],
+    "uk": [
+        "сильний біль у грудях", "задишка", "кров у калі", "кров у сечі", "слабкість однієї сторони",
+        "параліч", "порушення мови", "непритомність", "травма голови", "температура вище 39"
+    ],
 }
 
-SAFETY_FLAGS = {
-    "ru": ["сильная боль в груди", "одышка", "слабость одной стороны", "кровь в стуле", "кровь в моче", "температура", "травма головы", "обморок"],
-    "en": ["severe chest pain", "shortness of breath", "weakness on one side", "blood in stool", "blood in urine", "fever", "head injury", "fainting"],
-    "es": ["dolor fuerte en el pecho", "falta de aire", "debilidad de un lado", "sangre en heces", "sangre en orina", "fiebre", "lesión en la cabeza", "desmayo"],
-    "uk": ["сильний біль у грудях", "задишка", "слабкість однієї сторони", "кров у калі", "кров у сечі", "лихоманка", "травма голови", "непритомн"],
-}
-
-EMERGENCY_LINES = {
-    "ru": "⚠️ Это может быть опасно. Немедленно обратитесь в неотложную помощь (ER) или позвоните 911.",
+EMERGENCY_MSG = {
+    "ru": "⚠️ Это может быть опасно. Срочно обратитесь в отделение неотложной помощи (ER) или позвоните 911.",
     "en": "⚠️ This could be serious. Please go to the ER or call 911 immediately.",
     "es": "⚠️ Podría ser grave. Ve a urgencias o llama al 911 de inmediato.",
-    "uk": "⚠️ Це може бути небезпечно. Негайно зверніться до невідкладної допомоги (ER) або зателефонуйте 911.",
+    "uk": "⚠️ Це може бути небезпечно. Негайно зверніться до ER або зателефонуйте 911.",
 }
 
-QUICK_TOPICS = {
-    "ru": ["Долголетие", "Питание", "Сон"],
-    "en": ["Longevity", "Nutrition", "Sleep"],
-    "es": ["Longevidad", "Nutrición", "Sueño"],
-    "uk": ["Довголіття", "Харчування", "Сон"],
+PRIVACY_TEXT = {
+    "ru": "Я не врач. Я даю общую информацию и не заменяю медицинскую помощь. Не отправляйте личные номера или пароли. Ваши сообщения обрабатываются сервисом OpenAI.",
+    "en": "I’m not a doctor. I provide general information and do not replace medical care. Don’t send personal IDs or passwords. Your messages are processed by OpenAI.",
+    "es": "No soy médico. Brindo información general y no reemplazo la atención médica. No envíes datos sensibles. Tus mensajes son procesados por OpenAI.",
+    "uk": "Я не лікар. Надаю загальну інформацію і не замінюю медичну допомогу. Не надсилайте чутливі дані. Ваші повідомлення обробляє OpenAI.",
 }
 
-# -------------------------- STATE ---------------------------
-def get_state(user_id: int) -> Dict[str, Any]:
-    st = USER_STATES[user_id]
-    if "initialized" not in st:
-        st.update({
-            "initialized": True,
-            "lang": None,
-            "intent": None,
-            "slots": {},
-            "last_user_msgs": deque(maxlen=MAX_LAST_USER_MSGS),
-            "last_bot_msgs": deque(maxlen=MAX_LAST_BOT_MSGS),
-            "last_seen": time.time(),
-            "fell_back": False,
-            "timed_out": False,
-        })
+INTAKE_PROMPT = {
+    "ru": (
+        "Быстрый опрос (≈40 сек). Ответьте одним сообщением, в свободной форме:\n"
+        "1) Возраст и пол.\n"
+        "2) Главная цель (похудение, энергия, сон, долголетие и т.п.).\n"
+        "3) Основная жалоба/симптом (если есть) и сколько длится.\n"
+        "4) Хроника/операции/лекарства.\n"
+        "5) Сон: во сколько ложитесь/встаёте.\n"
+        "6) Активность: шаги/тренировки.\n"
+        "7) Питание: что обычно едите.\n"
+        "8) Есть ли «красные флаги» (сильная боль в груди, одышка и т.п.)?\n"
+        "После этого дам план из 4–6 пунктов и уточняющие вопросы."
+    ),
+    "en": (
+        "Quick intake (~40s). Reply in one message, free text:\n"
+        "1) Age & sex.\n"
+        "2) Main goal (weight, energy, sleep, longevity, etc.).\n"
+        "3) Main symptom (if any) & how long.\n"
+        "4) Conditions/surgeries/meds.\n"
+        "5) Sleep: usual bed/wake time.\n"
+        "6) Activity: steps/workouts.\n"
+        "7) Diet: typical meals.\n"
+        "8) Any red flags (severe chest pain, shortness of breath, etc.)?\n"
+        "Then I’ll give a 4–6 step plan and follow-ups."
+    ),
+    "es": (
+        "Intake rápido (~40s). Responde en un mensaje, texto libre:\n"
+        "1) Edad y sexo.\n"
+        "2) Meta principal (peso, energía, sueño, longevidad, etc.).\n"
+        "3) Síntoma principal (si hay) y duración.\n"
+        "4) Condiciones/cirugías/medicamentos.\n"
+        "5) Sueño: hora de dormir/levantarte.\n"
+        "6) Actividad: pasos/entrenos.\n"
+        "7) Dieta: comidas típicas.\n"
+        "8) ¿Alguna bandera roja (dolor fuerte en pecho, falta de aire, etc.)?\n"
+        "Luego daré un plan de 4–6 pasos y preguntas."
+    ),
+    "uk": (
+        "Швидкий опитувальник (~40с). Відповідайте одним повідомленням, довільно:\n"
+        "1) Вік і стать.\n"
+        "2) Головна мета (вага, енергія, сон, довголіття тощо).\n"
+        "3) Основний симптом (якщо є) і скільки триває.\n"
+        "4) Хроніка/операції/ліки.\n"
+        "5) Сон: коли лягаєте/прокидаєтесь.\n"
+        "6) Активність: кроки/тренування.\n"
+        "7) Харчування: що зазвичай їсте.\n"
+        "8) Чи є “червоні прапорці” (сильний біль у грудях, задишка тощо)?\n"
+        "Потім надам план з 4–6 кроків і уточнення."
+    ),
+}
+
+def detect_lang(text: str) -> str:
+    t = (text or "").lower()
+    if any(ch in t for ch in "іїєґ") or "привіт" in t:
+        return "uk"
+    if any(ch in t for ch in "ыэёъ") or "здравствуйте" in t or "привет" in t:
+        return "ru"
+    if any(w in t for w in ["hola", "gracias", "usted", "salud", "dolor", "¿", "¡", "ñ"]):
+        return "es"
+    return "en"
+
+def now_ts() -> float:
+    return time.time()
+
+def ensure_user(uid: int) -> Dict[str, Any]:
+    st = USER[uid]
+    st.setdefault("lang", None)
+    st.setdefault("profile", {})     # structured intake
+    st.setdefault("history", deque(maxlen=MAX_HISTORY))  # list of dicts {role, content}
+    st.setdefault("last_seen", now_ts())
+    st.setdefault("intake_needed", True)
     return st
 
 def update_seen(st: Dict[str, Any]):
-    st["last_seen"] = time.time()
+    st["last_seen"] = now_ts()
 
 def timed_out(st: Dict[str, Any]) -> bool:
-    return (time.time() - st.get("last_seen", 0)) > SESSION_TIMEOUT_SEC
+    return now_ts() - st.get("last_seen", 0) > SESSION_TIMEOUT_SEC
 
-# --------------------- TELEMETRY LOGGING --------------------
-def log_telemetry(user_id: int, intent: str, slots: Dict[str, Any], fell_back: bool):
+def lang_str(st: Dict[str, Any]) -> str:
+    return st.get("lang") or "en"
+
+async def send(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    await update.effective_chat.send_message(text, reply_markup=ReplyKeyboardRemove())
+
+# --------------------- LLM HELPERS ---------------------
+SYS_PROMPT = """
+You are TendAI — a concise, professional health & longevity assistant (not a doctor).
+Communicate warmly and clearly. Use the user's language.
+Core rules:
+- Start by confirming understanding and summarizing key facts.
+- Triage first: check red flags; if present, advise ER/911 immediately.
+- Provide a 4–6 step, actionable plan (sleep, nutrition, activity, labs, stress, follow-up).
+- Keep answers compact: <= 6 lines plus short bullets. Avoid long essays.
+- Personalize using stored profile (age/sex/goals/conditions/meds/sleep/activity/diet).
+- Never give definitive diagnosis or prescribe Rx; offer options and when to see a clinician.
+- When uncertain, propose safe self-care and monitoring windows.
+- Tone: calm, non-judgmental, science-informed, realistic.
+"""
+
+JSON_EXTRACT_PROMPT = """
+Extract a structured user profile from the text. Return ONLY minified JSON with keys:
+{"age": int|null, "sex": "male"|"female"|null, "goal": string|null,
+ "main_symptom": string|null, "duration": string|null,
+ "conditions": string[]|null, "surgeries": string[]|null, "meds": string[]|null,
+ "sleep": {"bedtime": string|null, "waketime": string|null}|null,
+ "activity": {"steps_per_day": int|null, "workouts": string|null}|null,
+ "diet": string|null, "red_flags": bool|null, "language": "ru"|"en"|"es"|"uk"|null}
+If info is missing put null. No commentary.
+"""
+
+def llm_chat(messages: List[Dict[str, str]], model: str = MODEL, temperature: float = 0.3) -> str:
+    resp = client.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        messages=messages,
+    )
+    return resp.choices[0].message.content.strip()
+
+def llm_extract_profile(text: str, lang: str) -> Dict[str, Any]:
     try:
-        exists = os.path.exists(TELEMETRY_CSV)
-        with open(TELEMETRY_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            if not exists:
-                w.writerow(["ts_iso", "user_id", "intent", "filled_slots", "fallback_used"])
-            w.writerow([datetime.utcnow().isoformat(), user_id, intent, ";".join(f"{k}={v}" for k,v in slots.items()), int(fell_back)])
+        content = llm_chat([
+            {"role": "system", "content": JSON_EXTRACT_PROMPT},
+            {"role": "user", "content": text}
+        ], model=os.getenv("OPENAI_MODEL_PARSER", MODEL), temperature=0)
+        data = json.loads(content)
+        # override language if we already detected
+        if lang and data.get("language") is None:
+            data["language"] = lang
+        return data
     except Exception as e:
-        logger.warning(f"Telemetry write failed: {e}")
+        logger.warning(f"Profile extract failed: {e}")
+        # Fallback: simple regex-based guesses
+        data = {
+            "age": None, "sex": None, "goal": None, "main_symptom": None, "duration": None,
+            "conditions": None, "surgeries": None, "meds": None,
+            "sleep": {"bedtime": None, "waketime": None},
+            "activity": {"steps_per_day": None, "workouts": None},
+            "diet": None, "red_flags": None, "language": lang or "en"
+        }
+        m = re.search(r'(\d{2})\s*(?:лет|y|years|años)', text.lower())
+        if m:
+            data["age"] = int(m.group(1))
+        if re.search(r'\b(male|man|муж|hombre)\b', text.lower()):
+            data["sex"] = "male"
+        if re.search(r'\b(female|woman|жен|mujer)\b', text.lower()):
+            data["sex"] = "female"
+        return data
 
-# ------------------------ UTILITIES -------------------------
-def extract_numbers(text: str):
-    nums = re.findall(r"\d+", text)
-    # quick mapping for Russian words like "семёрку" -> 7
+def build_llm_messages(st: Dict[str, Any], user_text: str) -> List[Dict[str, str]]:
+    lang = lang_str(st)
+    profile = st.get("profile") or {}
+    # Compose context in the user's language
+    profile_brief = json.dumps(profile, ensure_ascii=False)
+    system = SYS_PROMPT + f"\nUser language hint: {lang}. Stored profile (JSON): {profile_brief}."
+    messages = [{"role": "system", "content": system}]
+    # add recent history
+    for h in list(st["history"]):
+        messages.append(h)
+    messages.append({"role": "user", "content": user_text})
+    return messages
+
+def safety_hit(text: str, lang: str) -> bool:
+    flags = SAFETY_RED_FLAGS.get(lang, [])
     t = text.lower()
-    word_map = {
-        "семерку": 7, "семёрку": 7, "семь": 7,
-        "восьмерку": 8, "восьмёрку": 8, "восемь": 8,
-        "девятку": 9, "девять": 9,
-    }
-    for w, n in word_map.items():
-        if w in t:
-            nums.append(str(n))
-    return [int(n) for n in nums]
-
-def contains_any(text: str, keywords):
-    t = text.lower()
-    return any(k in t for k in keywords)
-
-def choose_intent(text: str, lang: str) -> Tuple[str, float]:
-    """Score-based rule intent classification. Returns (intent, score)."""
-    t = text.lower()
-    best_intent = "other"
-    best_score = 0
-    for intent in INTENTS:
-        if intent == "other":
-            continue
-        score = 0
-        for kw in KW[lang][intent]:
-            if kw in t:
-                score += 1
-        if score > best_score:
-            best_score = score
-            best_intent = intent
-    return best_intent, float(best_score)
-
-def safety_check(text: str, lang: str) -> bool:
-    return contains_any(text, SAFETY_FLAGS.get(lang, []))
-
-def anti_loop_text(st: Dict[str, Any], text: str) -> str:
-    """Avoid sending the same text >2 times; append a soft variation if needed."""
-    last = st["last_bot_msgs"]
-    if last and text.strip() == (last[-1] or "").strip():
-        # If already sent once, vary slightly
-        text = text + " ▸"
-    return text
-
-def record_bot_text(st: Dict[str, Any], text: str):
-    st["last_bot_msgs"].append(text)
-
-# ------------------------ TEMPLATES -------------------------
-TEMPLATES = {
-    "ru": {
-        "greet": "Привет! Я TendAI. Что вас беспокоит или интересует сейчас?",
-        "resume": "Продолжим с того места, где остановились?",
-        "fallback_q": "Я правильно понимаю тему? Выберите одно из вариантов или напишите подробнее.",
-        "ask_scale": "Кстати, по шкале 0–10 как сейчас?",
-        "assessment": [
-            "Понял. Коротко: есть ли сейчас боль, слабость, головокружение?",
-            "Как спалось прошлой ночью и была ли энергия утром?",
-            "Если удобно, оцените самочувствие 0–10 и что влияет больше всего?"
-        ],
-        "longevity": [
-            "Вы про долголетие. С какой области начнём — вес/питание, сон, активность или анализы?",
-            "Краткий совет: маленькие постоянные шаги > резких перемен.",
-            "Готов дать мини-план. Что приоритетно прямо сейчас?"
-        ],
-        "nutrition": [
-            "Про питание. Цель — снизить вес, держать вес или набрать мышечную массу?",
-            "Быстрый ориентир: белок 1.2–1.6 г/кг/день, овощи каждый приём пищи.",
-            "Есть ли ограничения/предпочтения в еде?"
-        ],
-        "sleep": [
-            "Про сон. Во сколько обычно ложитесь и во сколько хотите просыпаться?",
-            "Совет: фиксированное время подъёма и свет утром стабилизируют ритм.",
-            "Нужен мини-план сна?"
-        ],
-        "activity": [
-            "Про активность. Сколько шагов/минут умеренной нагрузки сейчас в день?",
-            "Правило: чуть-чуть чаще и чуть-чуть дольше каждую неделю.",
-            "Есть ли боли/ограничения?"
-        ],
-        "labs": [
-            "Про анализы. Хотите базовый набор для здоровья и долголетия?",
-            "Часто включают: липидный профиль, HbA1c, глюкоза натощак, ферритин, ТТГ, витамин D.",
-            "Когда сдавали последнее обследование?"
-        ],
-        "symptom": [
-            "Давайте уточним симптом. Где именно? (например: голова, спина, живот)",
-            "Какой характер боли: тупая/острая/жгучая/пульсирующая? И сколько длится?",
-            "Если удобно, по шкале 0–10 какая интенсивность сейчас?"
-        ],
-        "plan_sleep_ready": "Мини-план сна: за 2–3 ч до сна — тише и темнее; подъём в одно время; свет утром; кофе до 14:00. Продолжать?",
-        "er": EMERGENCY_LINES["ru"],
-    },
-    "en": {
-        "greet": "Hi, I’m TendAI. What’s bothering or interesting you right now?",
-        "resume": "Shall we continue from where we left off?",
-        "fallback_q": "Am I getting the topic right? Pick an option or type more details.",
-        "ask_scale": "By the way, on a 0–10 scale, how is it now?",
-        "assessment": [
-            "Got it. Briefly: any pain, weakness, or dizziness now?",
-            "How did you sleep last night, and energy this morning?",
-            "If you can, rate 0–10 and what affects it most?"
-        ],
-        "longevity": [
-            "Longevity — shall we start with weight/nutrition, sleep, activity, or labs?",
-            "Quick tip: tiny consistent steps beat sudden changes.",
-            "I can draft a mini-plan. What’s priority right now?"
-        ],
-        "nutrition": [
-            "Nutrition. Is the goal weight loss, maintenance, or muscle gain?",
-            "Rule of thumb: protein 1.2–1.6 g/kg/day, veggies each meal.",
-            "Any dietary restrictions or preferences?"
-        ],
-        "sleep": [
-            "Sleep. What time do you usually go to bed and want to wake up?",
-            "Tip: fixed wake time + morning light stabilize rhythm.",
-            "Want a quick sleep plan?"
-        ],
-        "activity": [
-            "Activity. How many steps/minutes of moderate exercise per day now?",
-            "Rule: a bit more often and a bit longer each week.",
-            "Any pain or limitations?"
-        ],
-        "labs": [
-            "Labs. Looking for a basic health & longevity panel?",
-            "Often includes: lipid panel, HbA1c, fasting glucose, ferritin, TSH, vitamin D.",
-            "When was your last checkup?"
-        ],
-        "symptom": [
-            "Let’s detail the symptom. Where exactly? (e.g., head, back, abdomen)",
-            "What’s the character: dull/sharp/burning/throbbing? How long has it lasted?",
-            "If it helps, on a 0–10 scale, how intense is it now?"
-        ],
-        "plan_sleep_ready": "Sleep mini-plan: wind down 2–3h before bed; fixed wake time; morning light; caffeine before 2pm. Continue?",
-        "er": EMERGENCY_LINES["en"],
-    },
-    "es": {
-        "greet": "Hola, soy TendAI. ¿Qué te preocupa o interesa ahora mismo?",
-        "resume": "¿Seguimos donde lo dejamos?",
-        "fallback_q": "¿Es este el tema? Elige una opción o escribe más detalles.",
-        "ask_scale": "Por cierto, en una escala 0–10, ¿cómo está ahora?",
-        "assessment": [
-            "Entendido. Breve: ¿tienes dolor, debilidad o mareo ahora?",
-            "¿Cómo dormiste anoche y la energía esta mañana?",
-            "Si puedes, califica 0–10 y ¿qué lo afecta más?"
-        ],
-        "longevity": [
-            "Longevidad: ¿empezamos con peso/nutrición, sueño, actividad o análisis?",
-            "Consejo: pasos pequeños y constantes superan los cambios bruscos.",
-            "Puedo sugerir un mini plan. ¿Qué es prioridad ahora?"
-        ],
-        "nutrition": [
-            "Nutrición. ¿Objetivo: bajar peso, mantener o ganar músculo?",
-            "Guía: proteína 1.2–1.6 g/kg/día, verduras en cada comida.",
-            "¿Alguna restricción o preferencia alimentaria?"
-        ],
-        "sleep": [
-            "Sueño. ¿A qué hora te acuestas y a qué hora quieres despertarte?",
-            "Tip: hora fija de despertar y luz por la mañana.",
-            "¿Quieres un mini plan de sueño?"
-        ],
-        "activity": [
-            "Actividad. ¿Cuántos pasos/minutos de ejercicio moderado por día?",
-            "Regla: un poco más a menudo y un poco más largo cada semana.",
-            "¿Algún dolor o limitación?"
-        ],
-        "labs": [
-            "Análisis. ¿Buscas un panel básico de salud y longevidad?",
-            "Suele incluir: perfil lipídico, HbA1c, glucosa en ayunas, ferritina, TSH, vitamina D.",
-            "¿Cuándo fue tu último chequeo?"
-        ],
-        "symptom": [
-            "Detallamos el síntoma. ¿Dónde exactamente? (p.ej., cabeza, espalda, abdomen)",
-            "Carácter: sordo/agudo/ardor/pulsátil. ¿Y cuánto tiempo lleva?",
-            "Si ayuda, en 0–10, ¿qué intensidad tiene ahora?"
-        ],
-        "plan_sleep_ready": "Mini plan: relajarse 2–3h antes; despertar fijo; luz por la mañana; cafeína antes de las 14:00. ¿Seguimos?",
-        "er": EMERGENCY_LINES["es"],
-    },
-    "uk": {
-        "greet": "Привіт, я TendAI. Що турбує або цікавить зараз?",
-        "resume": "Продовжимо з того місця, де зупинилися?",
-        "fallback_q": "Я правильно розумію тему? Оберіть варіант або напишіть деталі.",
-        "ask_scale": "До речі, за шкалою 0–10 як зараз?",
-        "assessment": [
-            "Зрозумів. Коротко: є зараз біль, слабкість або запаморочення?",
-            "Як спалося вночі і енергія зранку?",
-            "Якщо зручно, оцініть 0–10 і що впливає найбільше?"
-        ],
-        "longevity": [
-            "Довголіття. Почнемо з ваги/харчування, сну, активності чи аналізів?",
-            "Порада: маленькі сталі кроки кращі за різкі зміни.",
-            "Можу дати міні‑план. Що в пріоритеті?"
-        ],
-        "nutrition": [
-            "Про харчування. Мета — схуднення, утримання ваги чи набір м’язів?",
-            "Орієнтир: білок 1.2–1.6 г/кг/день, овочі кожного прийому.",
-            "Є обмеження або вподобання в їжі?"
-        ],
-        "sleep": [
-            "Про сон. Коли зазвичай лягаєте і коли хочете прокидатися?",
-            "Порада: фіксований час підйому і світло зранку стабілізують ритм.",
-            "Потрібен міні‑план сну?"
-        ],
-        "activity": [
-            "Про активність. Скільки кроків/хвилин помірного навантаження на день?",
-            "Правило: трохи частіше і трохи довше щотижня.",
-            "Є болі або обмеження?"
-        ],
-        "labs": [
-            "Про аналізи. Потрібен базовий набір для здоров’я й довголіття?",
-            "Часто включає: ліпідний профіль, HbA1c, глюкоза натще, феритин, ТТГ, вітамін D.",
-            "Коли було останнє обстеження?"
-        ],
-        "symptom": [
-            "Уточнимо симптом. Де саме? (наприклад: голова, спина, живіт)",
-            "Який характер болю: тупий/гострий/пекучий/пульсуючий? І скільки триває?",
-            "Якщо зручно, за шкалою 0–10 яка інтенсивність зараз?"
-        ],
-        "plan_sleep_ready": "Міні‑план сну: за 2–3 год до сну — тиша/темрява; підйом у той самий час; світло зранку; кава до 14:00. Продовжити?",
-        "er": EMERGENCY_LINES["uk"],
-    },
-}
-
-# ------------------------ SLOT LOGIC ------------------------
-BODY_PARTS = {
-    "ru": ["голова", "спина", "груд", "живот", "горло", "плеч", "рук", "ног", "сустав"],
-    "en": ["head", "back", "chest", "abdomen", "stomach", "throat", "shoulder", "arm", "leg", "joint"],
-    "es": ["cabeza", "espalda", "pecho", "abdomen", "estómago", "garganta", "hombro", "brazo", "pierna", "articulación"],
-    "uk": ["голова", "спина", "груди", "живіт", "горло", "плече", "рука", "нога", "суглоб"],
-}
-
-PAIN_CHAR = {
-    "ru": ["тупая", "острая", "жгучая", "пульсирующая"],
-    "en": ["dull", "sharp", "burning", "throbbing"],
-    "es": ["sordo", "agudo", "ardor", "pulsátil"],
-    "uk": ["тупий", "гострий", "пекучий", "пульсуючий"],
-}
-
-TIME_UNITS = {
-    "ru": {"час": "hours", "часа": "hours", "часов": "hours", "день": "days", "дня": "days", "дней": "days", "недел": "weeks"},
-    "en": {"hour": "hours", "hours": "hours", "day": "days", "days": "days", "week": "weeks", "weeks": "weeks"},
-    "es": {"hora": "hours", "horas": "hours", "día": "days", "días": "days", "semana": "weeks", "semanas": "weeks"},
-    "uk": {"год": "hours", "години": "hours", "годин": "hours", "день": "days", "днів": "days", "тижд": "weeks"},
-}
-
-def parse_duration(text: str, lang: str) -> Optional[str]:
-    t = text.lower()
-    nums = extract_numbers(t)
-    if not nums:
-        return None
-    for unit_src, unit_std in TIME_UNITS[lang].items():
-        if unit_src in t:
-            return f"{nums[0]} {unit_std}"
-    # If number but no unit, assume hours if context suggests recent
-    return f"{nums[0]} hours"
-
-def fill_symptom_slots(st: Dict[str, Any], text: str, lang: str):
-    slots = st.setdefault("slots", {})
-    t = text.lower()
-
-    # where
-    if "where" not in slots:
-        for part in BODY_PARTS[lang]:
-            if part in t:
-                slots["where"] = part
-                break
-
-    # character
-    if "character" not in slots:
-        for c in PAIN_CHAR[lang]:
-            if c in t:
-                slots["character"] = c
-                break
-
-    # duration
-    if "duration" not in slots:
-        dur = parse_duration(t, lang)
-        if dur:
-            slots["duration"] = dur
-
-    # intensity
-    if "intensity" not in slots:
-        nums = extract_numbers(t)
-        if nums:
-            # Take first number 0-10 as intensity if plausible
-            cand = nums[0]
-            if 0 <= cand <= 10:
-                slots["intensity"] = cand
-
-def symptom_next_question(st: Dict[str, Any], lang: str) -> str:
-    slots = st.get("slots", {})
-    if "where" not in slots:
-        return TEMPLATES[lang]["symptom"][0]
-    if "character" not in slots:
-        return TEMPLATES[lang]["symptom"][1]
-    if "duration" not in slots:
-        return TEMPLATES[lang]["symptom"][1]  # duration is mentioned together
-    if "intensity" not in slots:
-        return TEMPLATES[lang]["symptom"][2]
-    return ""  # All filled
-
-# ---------------------- REPLY BUILDERS ----------------------
-def make_quick_keyboard(lang: str):
-    buttons = [KeyboardButton(x) for x in QUICK_TOPICS[lang]]
-    return ReplyKeyboardMarkup([buttons], resize_keyboard=True, one_time_keyboard=True)
-
-def build_fallback(lang: str) -> Tuple[str, ReplyKeyboardMarkup]:
-    return (TEMPLATES[lang]["fallback_q"], make_quick_keyboard(lang))
-
-def ready_recommendation_symptom(st: Dict[str, Any], lang: str) -> str:
-    s = st.get("slots", {})
-    where = s.get("where", "?")
-    character = s.get("character", "?")
-    duration = s.get("duration", "?")
-    intensity = s.get("intensity", "?")
-    if lang == "ru":
-        tip = f"Итог: {where}, {character}, {duration}, интенсивность {intensity}/10.\n" \
-              f"Совет: отдых, тёплый компресс 15–20 мин, НПВП при отсутствии противопоказаний, мониторинг. " \
-              f"Если усиливается или есть новые симптомы — обратитесь к врачу."
-    elif lang == "es":
-        tip = f"Resumen: {where}, {character}, {duration}, intensidad {intensity}/10.\n" \
-              f"Consejo: reposo, compresa tibia 15–20 min, AINE si procede, observar. " \
-              f"Si empeora o aparecen señales nuevas, consulta médica."
-    elif lang == "uk":
-        tip = f"Підсумок: {where}, {character}, {duration}, інтенсивність {intensity}/10.\n" \
-              f"Порада: відпочинок, теплий компрес 15–20 хв, НПЗЗ за потреби, спостерігати. " \
-              f"Якщо посилюється або з’являються нові ознаки — зверніться до лікаря."
-    else:
-        tip = f"Summary: {where}, {character}, {duration}, intensity {intensity}/10.\n" \
-              f"Tip: rest, warm compress 15–20 min, NSAID if appropriate, monitor. " \
-              f"If it worsens or new signs appear, see a clinician."
-    return tip
-
-def build_intent_reply(intent: str, lang: str, st: Dict[str, Any], text: str) -> Tuple[str, Optional[ReplyKeyboardMarkup]]:
-    kb = None
-    # Safety: never ask 0–10 unless assessment OR symptom intensity slot prompting
-    if intent == "assessment":
-        nums = extract_numbers(text)
-        lines = TEMPLATES[lang]["assessment"]
-        if nums:
-            # Extract a rating from any number 0-10
-            rating = None
-            for n in nums:
-                if 0 <= n <= 10:
-                    rating = n
-                    break
-            if rating is not None:
-                if lang == "ru":
-                    msg = f"Принял оценку {rating}/10. Что сейчас больше всего мешает?"
-                elif lang == "es":
-                    msg = f"Anoto {rating}/10. ¿Qué influye más ahora?"
-                elif lang == "uk":
-                    msg = f"Прийняв {rating}/10. Що найбільше заважає зараз?"
-                else:
-                    msg = f"Got {rating}/10. What affects it the most right now?"
-                return msg, kb
-        # No numbers — gentle prompt included later
-        msg = lines[0] + "\n" + lines[1] + "\n" + TEMPLATES[lang]["ask_scale"]
-        return msg, kb
-
-    if intent == "longevity":
-        lines = TEMPLATES[lang]["longevity"]
-        msg = lines[0] + "\n" + lines[1] + "\n" + lines[2]
-        kb = make_quick_keyboard(lang)
-        return msg, kb
-
-    if intent == "nutrition":
-        lines = TEMPLATES[lang]["nutrition"]
-        msg = lines[0] + "\n" + lines[1] + "\n" + lines[2]
-        return msg, kb
-
-    if intent == "sleep":
-        lines = TEMPLATES[lang]["sleep"]
-        msg = lines[0] + "\n" + lines[1] + "\n" + lines[2]
-        return msg, kb
-
-    if intent == "activity":
-        lines = TEMPLATES[lang]["activity"]
-        msg = lines[0] + "\n" + lines[1] + "\n" + lines[2]
-        return msg, kb
-
-    if intent == "labs":
-        lines = TEMPLATES[lang]["labs"]
-        msg = lines[0] + "\n" + lines[1] + "\n" + lines[2]
-        return msg, kb
-
-    if intent == "symptom":
-        fill_symptom_slots(st, text, lang)
-        next_q = symptom_next_question(st, lang)
-        if next_q:
-            return next_q, kb
-        # All slots filled — give recommendation
-        return ready_recommendation_symptom(st, lang), kb
-
-    # other
-    fb_txt, kb = build_fallback(lang)
-    return fb_txt, kb
-
-# ---------------------- CORE HANDLER ------------------------
-async def safe_send(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, kb=None):
-    st = get_state(update.effective_user.id)
-    text = anti_loop_text(st, text)
-    await update.effective_chat.send_message(text, reply_markup=kb if kb else ReplyKeyboardRemove())
-    record_bot_text(st, text)
-
-def set_lang_if_needed(st: Dict[str, Any], text: str):
-    if not st.get("lang"):
-        st["lang"] = detect_lang(text)
-
-def soft_timeout_reset_if_needed(st: Dict[str, Any]) -> bool:
-    if timed_out(st):
-        st["timed_out"] = True
-        st["intent"] = None
-        st["slots"] = {}
-        return True
+    for f in flags:
+        if f in t:
+            return True
     return False
 
-async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    st = get_state(update.effective_user.id)
-    st["lang"] = st.get("lang") or "en"
-    await safe_send(update, context, TEMPLATES[st["lang"]]["greet"])
-
-async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    st = get_state(update.effective_user.id)
-    lang = st.get("lang") or "en"
-    txt = {
-        "ru": "Я коротко уточняю тему, задаю 1–2 вопроса и даю мини‑совет. Команды: /start /help /reset.",
-        "en": "I ask 1–2 clarifying questions and give a mini-tip. Commands: /start /help /reset.",
-        "es": "Hago 1–2 preguntas y doy un mini consejo. Comandos: /start /help /reset.",
-        "uk": "Ставлю 1–2 запитання і даю міні‑пораду. Команди: /start /help /reset.",
+# --------------------- COMMANDS ---------------------
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st = ensure_user(update.effective_user.id)
+    first_text = (update.message.text or "").strip()
+    st["lang"] = detect_lang(first_text) if first_text else (st.get("lang") or "ru")
+    lang = lang_str(st)
+    update_seen(st)
+    st["intake_needed"] = True if not st.get("profile") else False
+    greet = {
+        "ru": "Привет, я TendAI. Я помогу кратко и по делу.",
+        "en": "Hi, I’m TendAI. I’ll keep it short and useful.",
+        "es": "Hola, soy TendAI. Iré al grano y útil.",
+        "uk": "Привіт, я TendAI. Коротко і по суті."
     }[lang]
-    await safe_send(update, context, txt)
+    await send(update, context, greet)
+    await send(update, context, INTAKE_PROMPT[lang])
+    await send(update, context, PRIVACY_TEXT[lang])
 
-async def handle_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    st = get_state(update.effective_user.id)
-    st.update({"intent": None, "slots": {}, "last_bot_msgs": deque(maxlen=MAX_LAST_BOT_MSGS)})
-    lang = st.get("lang") or "en"
-    await safe_send(update, context, TEMPLATES[lang]["greet"])
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st = ensure_user(update.effective_user.id)
+    USER[update.effective_user.id] = {}  # wipe
+    ensure_user(update.effective_user.id)
+    await send(update, context, "Reset. /start")
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st = ensure_user(update.effective_user.id)
+    await send(update, context, PRIVACY_TEXT[lang_str(st)])
+
+async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st = ensure_user(update.effective_user.id)
+    lang = lang_str(st)
+    prof = st.get("profile") or {}
+    if not prof:
+        await send(update, context, {"ru":"Профиль пуст. Ответьте на опрос.",
+                                     "en":"Profile is empty. Please answer the intake.",
+                                     "es":"Perfil vacío. Responde el intake.",
+                                     "uk":"Профіль порожній. Дайте відповіді на опитування."}[lang])
+        return
+    await send(update, context, "Profile:\n" + json.dumps(prof, ensure_ascii=False, indent=2))
+
+async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st = ensure_user(update.effective_user.id)
+    lang = lang_str(st)
+    if not st.get("profile"):
+        await send(update, context, {"ru":"Сначала заполните короткий опрос.",
+                                     "en":"Please complete the quick intake first.",
+                                     "es":"Completa primero el intake.",
+                                     "uk":"Спочатку заповніть коротке опитування."}[lang])
+        return
+    # Ask LLM to produce a short plan using profile only
+    messages = [{"role":"system","content":SYS_PROMPT + "\nCreate a short plan based on stored profile only."},
+                {"role":"user","content":"Generate a concise 4–6 step plan now."}]
+    try:
+        reply = llm_chat(messages, temperature=0.3)
+    except Exception as e:
+        reply = {"ru":"Не удалось сгенерировать план. Попробуйте ещё раз.",
+                 "en":"Couldn’t generate a plan now. Try again.",
+                 "es":"No se pudo generar el plan. Inténtalo de nuevo.",
+                 "uk":"Не вдалося створити план. Спробуйте ще."}[lang]
+    await send(update, context, reply)
+
+# --------------------- MESSAGE HANDLER ---------------------
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text or ""
-    st = get_state(user_id)
-    set_lang_if_needed(st, text)
-    lang = st["lang"]
+    st = ensure_user(user_id)
+
+    # Language detection & timeout resume
+    st["lang"] = st.get("lang") or detect_lang(text)
+    lang = lang_str(st)
+    if timed_out(st):
+        st["history"].clear()
+        await send(update, context, {
+            "ru":"Продолжим с того места? Кратко напомните цель/симптом.",
+            "en":"Shall we resume? Briefly remind your goal/symptom.",
+            "es":"¿Seguimos? Resume tu objetivo/síntoma.",
+            "uk":"Продовжимо? Нагадайте коротко мету/симптом."
+        }[lang])
     update_seen(st)
 
-    # Timeout soft resume
-    if soft_timeout_reset_if_needed(st):
-        await safe_send(update, context, TEMPLATES[lang]["resume"])
+    # Red flags check (hard stop)
+    if safety_hit(text, lang):
+        await send(update, context, EMERGENCY_MSG[lang])
         return
 
-    # Track last user messages
-    st["last_user_msgs"].append(text)
-
-    # Safety first
-    if safety_check(text, lang):
-        await safe_send(update, context, TEMPLATES[lang]["er"])
-        log_telemetry(user_id, "safety", st.get("slots", {}), fell_back=False)
-        return
-
-    # Route intent if none or fallback
-    intent_score = 0.0
-    if not st.get("intent") or st.get("fell_back"):
-        intent, intent_score = choose_intent(text, lang)
-        # If low confidence => fallback
-        if intent == "other" or intent_score < 1.0:
-            st["fell_back"] = True
-            msg, kb = build_fallback(lang)
-            await safe_send(update, context, msg, kb)
-            log_telemetry(user_id, "fallback", st.get("slots", {}), fell_back=True)
+    # If intake is needed -> try to parse
+    if st.get("intake_needed"):
+        prof = llm_extract_profile(text, lang)
+        # if no age/goal at all, ask to try again
+        minimal_ok = prof.get("age") or prof.get("goal") or prof.get("main_symptom")
+        st["profile"] = prof if prof else {}
+        st["intake_needed"] = False if minimal_ok else True
+        if st["intake_needed"]:
+            await send(update, context, {
+                "ru":"Чуть подробнее, пожалуйста (возраст/пол/цель/симптом/длительность).",
+                "en":"Please add age/sex/goal/symptom/duration details.",
+                "es":"Agrega edad/sexo/meta/síntoma/duración, por favor.",
+                "uk":"Додайте вік/стать/мету/симптом/тривалість."
+            }[lang])
             return
-        st["intent"] = intent
-        st["fell_back"] = False
-
-    # If user tapped a quick topic during fallback, map it to intent
-    quick_map = {
-        QUICK_TOPICS[lang][0].lower(): "longevity",
-        QUICK_TOPICS[lang][1].lower(): "nutrition",
-        QUICK_TOPICS[lang][2].lower(): "sleep",
-    }
-    tl = text.lower().strip()
-    if st.get("fell_back") or st.get("intent") == "other":
-        if tl in quick_map:
-            st["intent"] = quick_map[tl]
-            st["fell_back"] = False
-
-    # Build reply for current intent
-    msg, kb = build_intent_reply(st["intent"], lang, st, text)
-
-    await safe_send(update, context, msg, kb)
-    log_telemetry(user_id, st.get("intent") or "other", st.get("slots", {}), fell_back=st.get("fell_back", False))
-
-# ------------------------ TESTS -----------------------------
-def _simulate(texts, lang_hint=None):
-    """A tiny offline simulator of core routing/slots for tests (no Telegram)."""
-    st = {
-        "lang": lang_hint or detect_lang(texts[0] if texts else ""),
-        "intent": None,
-        "slots": {},
-        "last_bot_msgs": deque(maxlen=MAX_LAST_BOT_MSGS),
-        "last_user_msgs": deque(maxlen=MAX_LAST_USER_MSGS),
-        "last_seen": time.time(),
-        "fell_back": False,
-    }
-    outs = []
-    for t in texts:
-        # Safety
-        if safety_check(t, st["lang"]):
-            outs.append(TEMPLATES[st["lang"]]["er"])
-            continue
-        # Intent
-        if not st["intent"] or st["fell_back"]:
-            intent, score = choose_intent(t, st["lang"])
-            if intent == "other" or score < 1.0:
-                st["fell_back"] = True
-                outs.append(TEMPLATES[st["lang"]]["fallback_q"])
-                continue
-            st["intent"] = intent
-            st["fell_back"] = False
-        # Build message
-        msg, _ = build_intent_reply(st["intent"], st["lang"], st, t)
-        outs.append(msg)
-    return outs, st
-
-def run_tests():
-    ok = True
-    # 1) “Хочу обсудить своё долголетие” → уточнение долголетия, без просьбы 0–10
-    outs, st = _simulate(["Хочу обсудить своё долголетие"], lang_hint="ru")
-    ok &= ("долголет" in "".join(outs).lower()) and ("0–10" not in "".join(outs))
-
-    # 2) “Голова болит уже 2 дня, тупая” → собирает слоты, задаёт недостающее/совет
-    outs2, st2 = _simulate(["Голова болит уже 2 дня, тупая", "8"], lang_hint="ru")
-    joined2 = " | ".join(outs2).lower()
-    ok &= (("тупая" in joined2) or ("интенсивность" in joined2))
-
-    # 3) “Поставь план сна” → задаёт время
-    outs3, st3 = _simulate(["Поставь план сна"], lang_hint="ru")
-    ok &= ("во сколько обычно ложитесь" in " ".join(outs3))
-
-    # 4) “Оценка: где-то на семёрку” → извлекает 7 и идёт дальше
-    outs4, st4 = _simulate(["Оценка: где-то на семёрку"], lang_hint="ru")
-    ok &= any("7/10" in o for o in outs4)
-
-    # 5) На испанском/английском бот отвечает на том же языке
-    outs5, st5 = _simulate(["Hola, quiero hablar de longevidad"], lang_hint=None)
-    ok &= ("Longevidad" in "".join(outs5)) or ("longevidad" in "".join(outs5).lower())
-
-    return ok
-
-# ------------------------- MAIN -----------------------------
-def main():
-    if os.getenv("RUN_TESTS", "0") == "1":
-        passed = run_tests()
-        print("TESTS PASSED" if passed else "TESTS FAILED")
+        # Confirm summary to user
+        summary = json.dumps(prof, ensure_ascii=False, indent=2)
+        confirm = {
+            "ru":"Принял. Краткое резюме профиля:\n",
+            "en":"Got it. Brief profile summary:\n",
+            "es":"Entendido. Resumen del perfil:\n",
+            "uk":"Прийнято. Короткий підсумок профілю:\n",
+        }[lang] + summary
+        await send(update, context, confirm)
+        # small next prompt
+        next_q = {
+            "ru":"С чем начнём прямо сейчас? (симптом/сон/питание/активность/анализы)",
+            "en":"Where do you want to start right now? (symptom/sleep/nutrition/activity/labs)",
+            "es":"¿Por dónde empezamos ahora? (síntoma/sueño/nutrición/actividad/análisis)",
+            "uk":"З чого почнемо зараз? (симптом/сон/харчування/активність/аналізи)",
+        }[lang]
+        await send(update, context, next_q)
         return
 
+    # Normal dialog: build context and call LLM
+    try:
+        st["history"].append({"role":"user","content": text})
+        messages = build_llm_messages(st, text)
+        reply = llm_chat(messages, temperature=0.4)
+        st["history"].append({"role":"assistant","content": reply})
+        await send(update, context, reply)
+    except Exception as e:
+        logger.warning(f"LLM call failed: {e}")
+        # Fallback rule-based minimal reply
+        fallback = {
+            "ru":"Короткий совет: начните со сна (фиксированное пробуждение, свет утром), шаги 7–10 тыс., овощи каждый приём, белок 1.2–1.6 г/кг/день. Если хотите — напишите главную цель, а я составлю план из 5 шагов.",
+            "en":"Quick tip: anchor sleep (fixed wake, morning light), 7–10k steps, veggies each meal, protein 1.2–1.6 g/kg/day. Tell me your main goal and I’ll draft a 5-step plan.",
+            "es":"Consejo rápido: ancla el sueño (despertar fijo, luz matutina), 7–10k pasos, verduras en cada comida, proteína 1.2–1.6 g/kg/día. Dime tu objetivo y haré un plan de 5 pasos.",
+            "uk":"Швидка порада: зафіксуйте пробудження, ранкове світло, 7–10 тис. кроків, овочі у кожен прийом, білок 1.2–1.6 г/кг/день. Напишіть головну мету — складу план з 5 кроків.",
+        }[lang]
+        await send(update, context, fallback)
+
+# --------------------- MAIN ---------------------
+def main():
     if TELEGRAM_TOKEN == "YOUR_TELEGRAM_TOKEN_HERE":
-        logger.warning("Please set TELEGRAM_TOKEN env var.")
+        logger.warning("Set TELEGRAM_TOKEN env var.")
+    if OPENAI_API_KEY == "YOUR_OPENAI_API_KEY_HERE":
+        logger.warning("Set OPENAI_API_KEY env var.")
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", handle_start))
-    app.add_handler(CommandHandler("help", handle_help))
-    app.add_handler(CommandHandler("reset", handle_reset))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("privacy", cmd_privacy))
+    app.add_handler(CommandHandler("profile", cmd_profile))
+    app.add_handler(CommandHandler("plan", cmd_plan))
 
-    logger.info("TendAI bot is starting (rules-first)...")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    logger.info("TendAI Pro bot is running (LLM-powered).")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+'''
+
+path = "/mnt/data/main_pro.py"
+with open(path, "w", encoding="utf-8") as f:
+    f.write(code)
+
+print(f"Saved to {path}")
