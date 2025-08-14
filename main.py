@@ -1,17 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 TendAI — чат-первый ассистент здоровья и долголетия.
-Обновления:
-- Безопасный fallback-план: без названий препаратов и дозировок (education & navigation only).
-- Усилен системный промпт (no diagnosis, no meds, JSON-only).
-- Многоязычность EN/ES/RU/UK сохранена; авто-детект улучшен.
-- Новые команды: /tz <±часы> (часовой пояс), /morning <0-23> (час уведомления), /data (CSV-экспорт).
-- Анти-дублирование ответов, мягкие эскалации и «красные флаги».
-- Типы совместимы с Python 3.8+ (List[str]).
+Динамический язык, но БЕЗ скачков: язык фиксируется на intake и при "немых" ответах (цифры/эмодзи).
+Интро-опрос (6 вопросов), живой диалог (LLM), чек-ины.
+Отзывы: кнопки 👍/👎 + текстовый комментарий, лог в Google Sheets (Feedback).
 """
 
-import os, re, json, uuid, logging, hashlib, time, io, csv
-from typing import List
+import os, re, json, uuid, logging, hashlib, time
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
@@ -68,7 +63,7 @@ credentials = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(creds_
 gclient = gspread.authorize(credentials)
 ss = gclient.open(SHEET_NAME)
 
-def _get_or_create_ws(title: str, headers: List[str]):
+def _get_or_create_ws(title: str, headers: list[str]):
     try:
         ws = ss.worksheet(title)
     except gspread.WorksheetNotFound:
@@ -116,8 +111,8 @@ def norm_lang(code: str | None) -> str:
 
 T = {
     "ru": {
-        "welcome":"Привет! Я TendAI — тёплый ассистент по здоровью и долголетию.",
-        "help":"Команды: /help, /privacy, /pause, /resume, /delete_data, /lang <ru|en|uk|es>, /feedback, /intake, /tz <±часы>, /morning <0-23>, /data",
+        "welcome":"Привет! Я TendAI — твой персональный ассистент по здоровью и долголетию.",
+        "help":"Команды: /help, /privacy, /pause, /resume, /delete_data, /lang <ru|en|uk|es>, /feedback, /intake",
         "privacy":"Я не заменяю врача. Даю мягкие рекомендации и чек-ины. Данные можно удалить через /delete_data.",
         "consent":"Можно время от времени спрашивать самочувствие? Напишите «да» или «нет».",
         "thanks":"Спасибо, услышал.",
@@ -142,13 +137,10 @@ T = {
         "intake_done":"Готово! Спасибо. Персонализирую советы.",
         "use_buttons":"Пожалуйста, выберите вариант кнопкой ниже (или «Нет, позже»).",
         "age_invalid":"Нужно одно число от 1 до 119. Напишите возраст, например: 34.",
-        "tz_set":"Часовой пояс сохранён.",
-        "morning_set":"Час утреннего напоминания сохранён.",
-        "export_ready":"Готово. Отправляю экспорт.",
     },
     "en": {
-        "welcome":"Hi! I’m TendAI — a warm health & longevity assistant.",
-        "help":"Commands: /help, /privacy, /pause, /resume, /delete_data, /lang <ru|en|uk|es>, /feedback, /intake, /tz <±hours>, /morning <0-23>, /data",
+        "welcome":"Hi! I’m TendAI — your personal assistant for health & longevity.",
+        "help":"Commands: /help, /privacy, /pause, /resume, /delete_data, /lang <ru|en|uk|es>, /feedback, /intake",
         "privacy":"I’m not a doctor. I offer gentle self-care and check-ins. You can wipe data via /delete_data.",
         "consent":"May I check in with you from time to time? Please reply “yes” or “no”.",
         "thanks":"Thanks, got it.",
@@ -173,13 +165,10 @@ T = {
         "intake_done":"All set — thanks. I’ll personalize advice.",
         "use_buttons":"Please pick an option below (or “No, later”).",
         "age_invalid":"I need a single number between 1 and 119. Please write your age, e.g., 34.",
-        "tz_set":"Time zone saved.",
-        "morning_set":"Morning check-in hour saved.",
-        "export_ready":"Done. Sending your export.",
     },
     "uk": {
-        "welcome":"Привіт! Я TendAI — теплий асистент зі здоров’я та довголіття.",
-        "help":"Команди: /help, /privacy, /pause, /resume, /delete_data, /lang <ru|en|uk|es>, /feedback, /intake, /tz <±год>, /morning <0-23>, /data",
+        "welcome":"Привіт! Я TendAI — твій персональний асистент зі здоров’я та довголіття.",
+        "help":"Команди: /help, /privacy, /pause, /resume, /delete_data, /lang <ru|en|uk|es>, /feedback, /intake",
         "privacy":"Я не лікар. Пропоную м’які кроки та чек-іни. Дані можна стерти через /delete_data.",
         "consent":"Можу час від часу писати, щоб дізнатись, як ви? Відповідь: «так» або «ні».",
         "thanks":"Дякую, почув.",
@@ -204,13 +193,10 @@ T = {
         "intake_done":"Готово! Дякуємо. Персоналізую поради.",
         "use_buttons":"Будь ласка, оберіть варіант нижче (або «Ні, пізніше»).",
         "age_invalid":"Потрібне одне число від 1 до 119. Напишіть вік, напр., 34.",
-        "tz_set":"Часовий пояс збережено.",
-        "morning_set":"Годину ранкового нагадування збережено.",
-        "export_ready":"Готово. Надсилаю експорт.",
     },
     "es": {
-        "welcome":"¡Hola! Soy TendAI — un asistente cálido de salud y longevidad.",
-        "help":"Comandos: /help, /privacy, /pause, /resume, /delete_data, /lang <ru|en|uk|es>, /feedback, /intake, /tz <±horas>, /morning <0-23>, /data",
+        "welcome":"¡Hola! Soy TendAI — tu asistente personal de salud y longevidad.",
+        "help":"Comandos: /help, /privacy, /pause, /resume, /delete_data, /lang <ru|en|uk|es>, /feedback, /intake",
         "privacy":"No soy médico. Ofrezco autocuidado y seguimientos. Borra tus datos con /delete_data.",
         "consent":"¿Puedo escribirte de vez en cuando para revisar? Responde «sí» o «no».",
         "thanks":"¡Gracias!",
@@ -235,20 +221,18 @@ T = {
         "intake_done":"Listo, gracias. Personalizo los consejos.",
         "use_buttons":"Elige una opción abajo (o «No, después»).",
         "age_invalid":"Necesito un número entre 1 y 119. Escribe tu edad, p. ej., 34.",
-        "tz_set":"Zona horaria guardada.",
-        "morning_set":"Hora de la mañana guardada.",
-        "export_ready":"Listo. Enviando tu exportación.",
     },
 }
 def t(lang: str, key: str) -> str:
     return T.get(lang, T["en"]).get(key, T["en"].get(key, key))
 
 # =========================
-# Динамическое определение языка
+# ЯЗЫК: определение без “скачков”
 # =========================
 CYR = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґ]")
 UK_MARKERS = set("іїєґІЇЄҐ")
 ES_MARKERS = set("ñÑ¡¿áéíóúÁÉÍÓÚ")
+ONLY_NONLETTERS = re.compile(r"^[^A-Za-zА-Яа-яЁёІіЇїЄєҐґñÑáéíóúÁÉÍÓÚ]+$")
 
 def guess_lang_heuristic(text: str) -> str | None:
     if not text: return None
@@ -275,6 +259,26 @@ def detect_lang_per_message(text: str, profile_lang: str = "en") -> str:
         return "en"
     return norm_lang(profile_lang)
 
+def pick_lang(uid: int, text: str, user_code: str | None) -> str:
+    """
+    Правило:
+      - Если сейчас intake -> возвращаем зафиксированный язык сессии/профиля.
+      - Если сообщение без букв (цифры/эмодзи) -> не переопределяем язык.
+      - Иначе определяем умно, но fallback = язык сессии/профиля.
+    """
+    s = sessions.setdefault(uid, {})
+    session_lang = s.get("last_lang") or norm_lang(user_code)
+    mode = s.get("mode")
+
+    if mode == "intake":
+        return session_lang
+
+    if not text or ONLY_NONLETTERS.match(text):
+        return session_lang
+
+    detected = detect_lang_per_message(text, session_lang)
+    return detected or session_lang
+
 # =========================
 # Intake options & keyboards
 # =========================
@@ -289,21 +293,21 @@ INTAKE_OPTS = {
     "en": {
         "q2":[("M","Male"),("F","Female"),("NA","Prefer not say")],
         "q3":[("none","None"),("cardio_htn","Heart/Hypertension"),("diab","Diabetes"),("asthma","Asthma/COPD"),("kidney_liver","Kidney/Liver"),("autoimm","Autoimmune/Immunosupp."),("other","Other")],
-        "q4":[("none","None"),("anticoag","Anticoagulants"),("steroids","Steroids/Immunosupp."),("other","Other")],
+        "q4":[("none","None"),("anticoag","Anticoagulants"),("steroids","Steroids/Immunosupp."),("other","Other regular")],
         "q5":[("none","None"),("nsaids","NSAIDs (ibuprofen etc.)"),("abx","Antibiotics"),("other","Other")],
         "q6":[("yes","Yes"),("no","No"),("na","N/A")],
     },
     "uk": {
         "q2":[("M","Чоловіча"),("F","Жіноча"),("NA","Не вказувати")],
         "q3":[("none","Немає"),("cardio_htn","Серце/Гіпертензія"),("diab","Діабет"),("asthma","Астма/ХОЗЛ"),("kidney_liver","Нирки/печінка"),("autoimm","Аутоімунні/імунодепр."),("other","Інше")],
-        "q4":[("none","Немає"),("anticoag","Антикоагулянти"),("steroids","Стероїди/імунодепр."),("other","Інше")],
+        "q4":[("none","Немає"),("anticoag","Антикоагулянти"),("steroids","Стероїди/імунодепр."),("other","Інше регулярно")],
         "q5":[("none","Немає"),("nsaids","НПЗП (ібупрофен тощо)"),("abx","Антибіотики"),("other","Інше")],
         "q6":[("yes","Так"),("no","Ні"),("na","Н/Д")],
     },
     "es": {
         "q2":[("M","Masculino"),("F","Femenino"),("NA","Prefiero no decir")],
         "q3":[("none","Ninguna"),("cardio_htn","Corazón/Hipertensión"),("diab","Diabetes"),("asthma","Asma/EPOC"),("kidney_liver","Riñón/Hígado"),("autoimm","Autoinm./Inmunosup."),("other","Otra")],
-        "q4":[("none","Ninguna"),("anticoag","Anticoagulantes"),("steroids","Esteroides/Inmunosup."),("other","Otra")],
+        "q4":[("none","Ninguna"),("anticoag","Anticoagulantes"),("steroids","Esteroides/Inmunosup."),("other","Otra habitual")],
         "q5":[("none","Ninguna"),("nsaids","AINEs (ibuprofeno)"),("abx","Antibióticos"),("other","Otra")],
         "q6":[("yes","Sí"),("no","No"),("na","N/A")],
     },
@@ -351,7 +355,7 @@ def users_get(uid: int) -> dict:
     return {}
 def users_upsert(uid: int, username: str, lang: str):
     idx = users_row_idx(uid)
-    row = [str(uid), username or "", lang, "no", "0", "9", "no", ""]
+    row = [str(uid), username or "", lang, "no", "0", "", "no", ""]
     if idx: ws_users.update(f"A{idx}:H{idx}", [row])
     else:   ws_users.append_row(row)
 def users_set(uid: int, field: str, value: str):
@@ -398,7 +402,7 @@ def save_feedback(uid: int, username: str, context_label: str, rating: str, comm
     try:
         ws_feedback.append_row([
             datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-            str(uid), context_label or "chat", username or "", rating, comment or ""
+            str(uid), context_label or "general", username or "", rating, comment or ""
         ])
         logging.info(f"Feedback saved: uid={uid} ctx={context_label} rating={rating} comment_len={len(comment or '')}")
     except Exception as e:
@@ -409,16 +413,14 @@ def save_feedback(uid: int, username: str, context_label: str, rating: str, comm
 # =========================
 SYS_PROMPT = (
     "You are TendAI, a professional, warm health & longevity coach. "
-    "Speak in the user's language (en/es/ru/uk). Keep it concise: 2–5 sentences. "
-    "STRICT SAFETY: Do NOT diagnose, do NOT name medications, do NOT suggest dosages, do NOT interpret labs. "
-    "Provide general education and next-step navigation only. "
-    "Ask ONE focused follow-up if essential information is missing. "
-    "For common complaints, consider context (sleep, hydration/nutrition, stress, sick contacts, activity/heat). "
-    "Encourage a 0–10 self-rating when appropriate. "
-    "Offer a micro-plan (3 concise self-care steps) if safe (no drugs). "
-    "Add one-line red flags (e.g., high fever, shortness of breath, chest pain, one-sided weakness) with seek-care advice. "
+    "Speak in the user's language. 2–5 sentences. Natural, supportive, specific. "
+    "Never diagnose; no fear. Ask ONE focused follow-up when data is missing. "
+    "For weakness/fatigue and common complaints, consider context questions: training/heat, sleep, nutrition/hydration, "
+    "bowel/urination, stress, sick contacts. Encourage a 0–10 self-rating or what activities are limited. "
+    "Provide a tiny micro-plan (3 concise steps) when appropriate. "
+    "Add one-line red flags: high fever, shortness of breath, chest pain, one-sided weakness; advise medical care if present. "
     "Offer to close the loop: propose a check-in later (evening or next morning). "
-    "Do NOT render buttons; present choices inline as short phrases. "
+    "Do NOT show buttons; present choices inline as short phrases. "
     "Return ONLY JSON with keys: "
     "assistant (string), "
     "next_action (one of: followup, rate_0_10, confirm_plan, pick_reminder, escalate, ask_feedback, none), "
@@ -571,13 +573,16 @@ async def on_startup(app):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
-    lang = users_get(uid).get("lang") or norm_lang(getattr(user,"language_code",None))
+    # Базовый язык по профилю
+    base = norm_lang(getattr(user,"language_code",None))
+    # Если уже есть сохранённый язык — используем его
+    lang = users_get(uid).get("lang") or base
     if not users_get(uid):
         users_upsert(uid, user.username or "", lang)
-    await update.message.reply_text(f"{t(lang,'welcome')}\n{t(lang,'help')}", reply_markup=ReplyKeyboardRemove())
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
-    s["intake_offered"] = True
     s["last_lang"] = lang
+    s["intake_offered"] = True
+    await update.message.reply_text(f"{t(lang,'welcome')}\n{t(lang,'help')}", reply_markup=ReplyKeyboardRemove())
     await update.message.reply_text(t(lang,"intake_offer"), reply_markup=kb_intake_offer(lang))
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -615,7 +620,9 @@ async def cmd_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cand = norm_lang(context.args[0])
     if cand not in SUPPORTED:
         await update.message.reply_text("Usage: /lang ru|en|uk|es"); return
-    users_set(uid,"lang",cand); await update.message.reply_text("✅ Language set.")
+    users_set(uid,"lang",cand)
+    sessions.setdefault(uid,{})["last_lang"] = cand
+    await update.message.reply_text("✅ Language set.")
 
 async def cmd_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -630,6 +637,7 @@ async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     base = sessions.get(uid, {}).get("last_lang") or users_get(uid).get("lang") or norm_lang(getattr(update.effective_user,"language_code",None))
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
     s["mode"]="intake"; s["intake"]={"q":1, "ans":{}}
+    s["last_lang"] = base
     await update.message.reply_text(t(base,"intake_q1_age"), reply_markup=kb_intake_skip(base))
 
 async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -637,60 +645,6 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = sessions.setdefault(uid,{})
     s["awaiting_comment"]=False
     await update.message.reply_text("Ок, пропустили.")
-
-# New: timezone, morning, data export
-async def cmd_tz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    base = users_get(uid).get("lang") or norm_lang(getattr(update.effective_user,"language_code",None))
-    if not context.args:
-        await update.message.reply_text({"ru":"Использование: /tz -5 (часы относительно UTC)",
-                                         "uk":"Використання: /tz +2 (години від UTC)",
-                                         "es":"Uso: /tz -5 (horas respecto a UTC)",
-                                         "en":"Usage: /tz -5 (hours offset from UTC)"}[base]); return
-    try:
-        off = int(context.args[0])
-        if not (-12 <= off <= 14): raise ValueError
-        users_set(uid, "tz_offset", str(off))
-        await update.message.reply_text(t(base,"tz_set"))
-    except Exception:
-        await update.message.reply_text({"ru":"Нужно целое число от -12 до +14.","uk":"Потрібно ціле число від -12 до +14.","es":"Un entero entre -12 y +14.","en":"An integer between -12 and +14 is required."}[base])
-
-async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    base = users_get(uid).get("lang") or norm_lang(getattr(update.effective_user,"language_code",None))
-    if not context.args:
-        await update.message.reply_text({"ru":"Использование: /morning 9","uk":"Використання: /morning 9","es":"Uso: /morning 9","en":"Usage: /morning 9"}[base]); return
-    try:
-        h = int(context.args[0])
-        if not (0 <= h <= 23): raise ValueError
-        users_set(uid, "checkin_hour", str(h))
-        await update.message.reply_text(t(base,"morning_set"))
-    except Exception:
-        await update.message.reply_text({"ru":"Час 0–23.","uk":"Година 0–23.","es":"Hora 0–23.","en":"Hour 0–23."}[base])
-
-async def cmd_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    base = users_get(uid).get("lang") or "en"
-    await update.message.reply_text(t(base,"export_ready"))
-    # Build CSV from Episodes + Feedback (user-specific)
-    eps_rows = [["episode_id","topic","started_at","baseline_severity","red_flags","plan_accepted","status","last_update","notes"]]
-    for row in ws_eps.get_all_records():
-        if str(row.get("user_id")) == str(uid):
-            eps_rows.append([row.get("episode_id"),row.get("topic"),row.get("started_at"),
-                             row.get("baseline_severity"),row.get("red_flags"),row.get("plan_accepted"),
-                             row.get("status"),row.get("last_update"),row.get("notes")])
-    fb_rows = [["timestamp","context","rating","comment"]]
-    for row in ws_feedback.get_all_records():
-        if str(row.get("user_id")) == str(uid):
-            fb_rows.append([row.get("timestamp"),row.get("context"),row.get("rating"),row.get("comment")])
-    # Pack into a single CSV (two sections)
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["# Episodes"]); w.writerows(eps_rows); w.writerow([])
-    w.writerow(["# Feedback"]); w.writerows(fb_rows)
-    data = io.BytesIO(buf.getvalue().encode("utf-8"))
-    data.name = f"tendai_export_{uid}.csv"
-    await context.bot.send_document(chat_id=uid, document=data)
 
 # =========================
 # Callback (intake & feedback)
@@ -736,6 +690,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = data.split("|")
     if len(parts) >= 2 and parts[1] == "start":
         s["mode"]="intake"; s["intake"]={"q":1,"ans":{}}
+        s["last_lang"] = lang
         await q.message.reply_text(t(lang,"intake_q1_age"), reply_markup=kb_intake_skip(lang))
         return
 
@@ -792,8 +747,7 @@ def feedback_prompt_needed(uid: int, interval_sec=180.0) -> bool:
     return False
 
 def fallback_plan(lang: str, ans: dict) -> list[str]:
-    """Safe micro-plan without meds/doses."""
-    sev = int(ans.get("severity", 5) or 5)
+    sev = int(ans.get("severity", 5))
     red = (ans.get("red") or "None").lower()
     urgent = any(w in red for w in ["fever","breath","одыш","груд","chest"]) and sev >= 7
     if urgent:
@@ -801,32 +755,33 @@ def fallback_plan(lang: str, ans: dict) -> list[str]:
                 "en":["⚠️ Some answers suggest urgent risks. Please seek medical care as soon as possible."],
                 "uk":["⚠️ Є ознаки можливої загрози. Зверніться до лікаря."],
                 "es":["⚠️ Posibles signos de urgencia. Busca atención médica lo antes posible."]}[lang]
-    base = {"ru":[ "1) Стакан воды и 15–20 минут спокойного отдыха.",
-                   "2) Короткая прогулка/лёгкая растяжка (если самочувствие позволяет).",
-                   "3) Перерыв от экранов 30–60 минут; отмечайте симптомы и их изменения." ],
-            "en":[ "1) A glass of water and 15–20 minutes of quiet rest.",
-                   "2) A short walk or gentle stretches (if you feel up to it).",
-                   "3) Take a 30–60 min screen break; note symptoms and any changes." ],
-            "uk":[ "1) Склянка води та 15–20 хв спокійного відпочинку.",
-                   "2) Коротка прогулянка або легка розтяжка (якщо самопочуття дозволяє).",
-                   "3) Перерва від екранів 30–60 хв; відмічайте симптоми та зміни." ],
-            "es":[ "1) Un vaso de agua y 15–20 minutos de descanso tranquilo.",
-                   "2) Paseo corto o estiramientos suaves (si te sientes con fuerzas).",
-                   "3) Pausa de pantallas 30–60 min; apunta síntomas y cambios." ]}[lang]
+    base = {"ru":[ "1) 400–600 мл воды + 15–20 минут тишины.",
+                   "2) Если нет противопоказаний — ибупрофен 200–400 мг 1 раз с едой.",
+                   "3) Перерыв от экранов 30–60 мин." ],
+            "en":[ "1) 400–600 ml water + 15–20 min quiet rest.",
+                   "2) If no contraindications — ibuprofen 200–400 mg once with food.",
+                   "3) Screen break 30–60 min." ],
+            "uk":[ "1) 400–600 мл води + 15–20 хв тиші.",
+                   "2) Якщо немає протипоказань — ібупрофен 200–400 мг 1 раз із їжею.",
+                   "3) Перерва від екранів 30–60 хв." ],
+            "es":[ "1) 400–600 ml de agua + 15–20 min de descanso.",
+                   "2) Si no hay contraindicaciones — ibuprofeno 200–400 mg una vez con comida.",
+                   "3) Descanso de pantallas 30–60 min." ]}[lang]
     return base
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
     text = (update.message.text or "").strip()
 
-    base = users_get(uid).get("lang") or norm_lang(getattr(user,"language_code",None)) or "en"
-    msg_lang = detect_lang_per_message(text, base)
+    # стабильный выбор языка
+    base_code = getattr(user,"language_code",None)
+    msg_lang = pick_lang(uid, text, base_code)
 
+    # сохранить язык в сессию и при необходимости в Users
     s = sessions.setdefault(uid, {"mode":"chat","answers":{}, "chat_history":[]})
-    s["last_lang"] = msg_lang
-
     if not users_get(uid):
-        users_upsert(uid, user.username or "", base)
+        users_upsert(uid, user.username or "", msg_lang)
+    s["last_lang"] = msg_lang
 
     if text.lower() in GREETINGS and not s.get("intake_offered"):
         await update.message.reply_text(t(msg_lang,"welcome"), reply_markup=ReplyKeyboardRemove())
@@ -835,6 +790,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         s["intake_offered"] = True
         await update.message.reply_text(t(msg_lang,"intake_offer"), reply_markup=kb_intake_offer(msg_lang))
 
+    # Intake Q1 — не ломаем язык на цифрах
     if s.get("mode") == "intake" and s.get("intake",{}).get("q") == 1:
         m = re.fullmatch(r"\s*(\d{1,3})\s*", text)
         if not m:
@@ -932,12 +888,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_user = user_now.replace(hour=19, minute=0, second=0, microsecond=0)
             if target_user < user_now: target_user += timedelta(days=1)
         elif code == "morning":
-            # использовать сохранённый час или 9
-            try:
-                mh = int(urec.get("checkin_hour") or "9")
-            except Exception:
-                mh = 9
-            target_user = user_now.replace(hour=mh, minute=0, second=0, microsecond=0)
+            target_user = user_now.replace(hour=9, minute=0, second=0, microsecond=0)
             if target_user < user_now: target_user += timedelta(days=1)
         else:
             target_user = None
@@ -1048,11 +999,9 @@ def main():
     app.add_handler(CommandHandler("feedback", cmd_feedback))
     app.add_handler(CommandHandler("intake", cmd_intake))
     app.add_handler(CommandHandler("skip", cmd_skip))
-    app.add_handler(CommandHandler("tz", cmd_tz))
-    app.add_handler(CommandHandler("morning", cmd_morning))
-    app.add_handler(CommandHandler("data", cmd_data))
 
     app.add_handler(CallbackQueryHandler(on_callback))  # intake + feedback кнопки
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
     app.run_polling(drop_pending_updates=True)
