@@ -28,6 +28,7 @@ from telegram.ext import (
 
 from openai import OpenAI
 import gspread
+from gspread.exceptions import SpreadsheetNotFound
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ---------------------------
@@ -39,9 +40,10 @@ DetectorFactory.seed = 0
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 SHEET_NAME = os.getenv("SHEET_NAME", "TendAI Sheets")
-
-DEFAULT_CHECKIN_LOCAL = "08:30"  # локальное время пользователя (его tz_offset) для ежедневного чека
+SHEET_ID = os.getenv("SHEET_ID", "")  # рекомендуется указать ID
+DEFAULT_CHECKIN_LOCAL = "08:30"
 
 # OpenAI клиент
 oai = None
@@ -61,8 +63,12 @@ creds_dict = json.loads(creds_json)
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 gclient = gspread.authorize(credentials)
 
-# Создаём/открываем книгу и листы
-ss = gclient.open(SHEET_NAME)
+# Открываем книгу по ID, иначе по имени; если нет доступа — создаём
+try:
+    ss = gclient.open_by_key(SHEET_ID) if SHEET_ID else gclient.open(SHEET_NAME)
+except SpreadsheetNotFound:
+    logging.warning("Spreadsheet not found by ID/name — creating a new one...")
+    ss = gclient.create(SHEET_NAME)
 
 def _get_or_create_ws(title: str, headers: List[str]):
     try:
@@ -76,47 +82,26 @@ def _get_or_create_ws(title: str, headers: List[str]):
     return ws
 
 ws_feedback = _get_or_create_ws(
-    "Feedback",
-    ["timestamp", "user_id", "name", "username", "rating", "comment"],
+    "Feedback", ["timestamp", "user_id", "name", "username", "rating", "comment"]
 )
-
 ws_users = _get_or_create_ws(
-    "Users",
-    ["user_id", "username", "lang", "consent", "tz_offset", "checkin_hour", "paused"],
+    "Users", ["user_id", "username", "lang", "consent", "tz_offset", "checkin_hour", "paused"]
 )
-
 ws_profiles = _get_or_create_ws(
     "Profiles",
-    ["user_id", "sex", "age", "goal", "conditions", "meds", "allergies", "sleep", "activity", "diet", "notes", "updated_at"],
+    ["user_id", "sex", "age", "goal", "conditions", "meds", "allergies",
+     "sleep", "activity", "diet", "notes", "updated_at"],
 )
-
 ws_episodes = _get_or_create_ws(
     "Episodes",
-    [
-        "episode_id",
-        "user_id",
-        "topic",
-        "started_at",
-        "baseline_severity",
-        "red_flags",
-        "plan_accepted",
-        "target",
-        "reminder_at",
-        "next_checkin_at",
-        "status",
-        "last_update",
-        "notes",
-    ],
+    ["episode_id","user_id","topic","started_at","baseline_severity","red_flags",
+     "plan_accepted","target","reminder_at","next_checkin_at","status","last_update","notes"],
 )
-
 ws_reminders = _get_or_create_ws(
-    "Reminders",
-    ["id", "user_id", "text", "when_utc", "created_at", "status"]
+    "Reminders", ["id", "user_id", "text", "when_utc", "created_at", "status"]
 )
-
 ws_daily = _get_or_create_ws(
-    "DailyCheckins",
-    ["timestamp", "user_id", "mood", "comment"]
+    "DailyCheckins", ["timestamp", "user_id", "mood", "comment"]
 )
 
 # ---------------------------
@@ -313,7 +298,7 @@ def t(lang: str, key: str) -> str:
     return T.get(lang, T["en"]).get(key, T["en"].get(key, key))
 
 # ---------------------------
-# Sheets helpers
+# Helpers for Sheets
 # ---------------------------
 def utcnow():
     return datetime.now(timezone.utc)
@@ -608,13 +593,10 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
     sys = SYS_ROUTER.format(lang=lang) + f"\nUserProfile: {json.dumps(profile, ensure_ascii=False)}"
     try:
         resp = oai.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL","gpt-4o-mini"),
+            model=OPENAI_MODEL,
             temperature=0.2,
             max_tokens=420,
-            messages=[
-                {"role":"system","content":sys},
-                {"role":"user","content":text},
-            ]
+            messages=[{"role":"system","content":sys},{"role":"user","content":text}]
         )
         out = resp.choices[0].message.content.strip()
         m = re.search(r"\{.*\}\s*$", out, re.S)
@@ -696,7 +678,7 @@ async def start_profile(update: Update, lang: str, uid: int):
     kb = build_profile_kb(lang, step["key"], step["opts"][lang])
     await update.message.reply_text(T[lang]["p_step_1"], reply_markup=kb)
 
-# >>> FIXED: принимает Message (msg), использует msg.reply_text вместо update.effective_chat
+# >>> FIXED: принимает Message, использует reply_text
 async def advance_profile(msg, lang: str, uid: int):
     s = sessions.get(uid, {})
     s["p_step"] += 1
@@ -719,17 +701,14 @@ async def advance_profile(msg, lang: str, uid: int):
     await msg.reply_text(T[lang]["start_where"], reply_markup=main_menu(lang))
 
 # ---------------------------
-# Command Handlers
+# Commands
 # ---------------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = norm_lang(getattr(user, "language_code", None))
     users_upsert(user.id, user.username or "", lang)
 
-    await update.message.reply_text(
-        t(lang, "welcome"),
-        reply_markup=main_menu(lang),
-    )
+    await update.message.reply_text(t(lang, "welcome"), reply_markup=main_menu(lang))
 
     u = users_get(user.id)
     if (u.get("consent") or "").lower() not in {"yes", "no"}:
@@ -833,7 +812,7 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(lang, "skip_ok"))
 
 # ---------------------------
-# Callback (consent, feedback thumbs, profile, daily mood)
+# Callback (consent, feedback, profile, daily mood)
 # ---------------------------
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -877,7 +856,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("mood|"):
         mood = data.split("|",1)[1]
         if mood == "note":
-            sessions.setdefault(uid, {})["awaiting_comment"] = True
+            sessions.setdefault(uid, {})["awaiting_daily_comment"] = True
             await q.message.reply_text({"ru":"Коротко опиши самочувствие:","uk":"Коротко опиши самопочуття:","en":"Write a short note:"}[lang])
             return
         ws_daily.append_row([iso(utcnow()), str(uid), mood, ""])
@@ -1015,12 +994,21 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lang = norm_lang(urec.get("lang") or getattr(user, "language_code", None))
 
+    # комментарий к ежедневному чеку
+    if sessions.get(uid, {}).get("awaiting_daily_comment"):
+        ws_daily.append_row([iso(utcnow()), str(uid), "note", text])
+        sessions[uid]["awaiting_daily_comment"] = False
+        await update.message.reply_text(T[lang]["mood_thanks"])
+        return
+
+    # комментарий к лайк/дизлайк
     if sessions.get(uid, {}).get("awaiting_comment"):
         ws_feedback.append_row([iso(utcnow()), str(uid), "comment", user.username or "", "", text])
         sessions[uid]["awaiting_comment"] = False
         await update.message.reply_text(t(lang, "comment_saved"))
         return
 
+    # свободный ввод шага профиля
     if sessions.get(uid, {}).get("p_wait_key"):
         key = sessions[uid]["p_wait_key"]
         sessions[uid]["p_wait_key"] = None
@@ -1033,6 +1021,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await advance_profile(update.message, lang, uid)
         return
 
+    # активный сценарий боли
     if sessions.get(uid, {}).get("topic") == "pain":
         await continue_pain_triage(update, context, lang, uid, text); return
 
@@ -1052,6 +1041,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(q)
         return
 
+    # общий фолбэк
     prof = profiles_get(uid)
     data = llm_router_answer(text, lang, prof)
     reply = data.get("assistant_reply") or t(lang, "unknown")
@@ -1062,7 +1052,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(q)
 
 # ---------------------------
-# Number replies (0–10) for episode check-in
+# Number replies (0–10)
 # ---------------------------
 async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1076,6 +1066,12 @@ async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lang = norm_lang(users_get(uid).get("lang") or getattr(user, "language_code", None))
+
+    # >>> ВАЖНО: если идёт боль-шаг4, передаём в триаж
+    if sessions.get(uid, {}).get("topic") == "pain" and sessions[uid].get("step") == 4:
+        await continue_pain_triage(update, context, lang, uid, str(val))
+        return
+
     ep = episode_find_open(uid)
     if not ep:
         await update.message.reply_text(t(lang, "thanks")); return
