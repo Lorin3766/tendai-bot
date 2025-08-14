@@ -334,7 +334,6 @@ def users_upsert(user_id: int, username: str, lang: str):
     base = {"user_id": str(user_id), "username": username or "", "lang": lang,
             "consent": "no", "tz_offset": "0", "checkin_hour": DEFAULT_CHECKIN_LOCAL, "paused": "no"}
     if SHEETS_ENABLED:
-        # find
         vals = ws_users.get_all_records()
         for i, row in enumerate(vals, start=2):
             if str(row.get("user_id")) == str(user_id):
@@ -370,7 +369,6 @@ def profiles_get(user_id: int) -> dict:
 def profiles_upsert(user_id: int, data: dict):
     if SHEETS_ENABLED:
         headers = _headers(ws_profiles)
-        # read current
         current = None; idx = None
         for i, row in enumerate(ws_profiles.get_all_records(), start=2):
             if str(row.get("user_id")) == str(user_id):
@@ -645,16 +643,19 @@ async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"daily checkin error: {e}")
 
 # ---------------------------
-# LLM Router
+# LLM Router  (FIXED: escaped braces)
 # ---------------------------
 SYS_ROUTER = """
 You are TendAI — a concise, warm, professional health & longevity assistant (not a doctor).
 Always answer strictly in {lang}. Keep it short (<=6 lines + up to 4 bullets).
 Use user profile if helpful. TRIAGE: ask 1–2 clarifiers first; advise ER only for clear red flags with high confidence.
 Return MINIFIED JSON ONLY:
-{"intent":"symptom"|"nutrition"|"sleep"|"labs"|"habits"|"longevity"|"other",
- "assistant_reply":string,
- "followups":string[],"needs_more":boolean,"red_flags":boolean,"confidence":0..1}
+{{"intent":"symptom"|"nutrition"|"sleep"|"labs"|"habits"|"longevity"|"other",
+  "assistant_reply": string,
+  "followups": string[],
+  "needs_more": boolean,
+  "red_flags": boolean,
+  "confidence": 0.0}}
 """
 def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
     if not oai:
@@ -1011,6 +1012,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
     text = (update.message.text or "").strip()
+    logging.info(f"INCOMING uid={uid} text={text[:160]}")
 
     urec = users_get(uid)
     if not urec:
