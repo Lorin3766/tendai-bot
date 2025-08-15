@@ -106,14 +106,16 @@ sessions: Dict[int, dict] = {}
 
 # --------- i18n ----------
 SUPPORTED = {"ru", "en", "uk"}
+
 def norm_lang(code: Optional[str]) -> str:
     if not code: return "en"
     c = code.split("-")[0].lower()
     return c if c in SUPPORTED else "en"
 
+# ---- CHANGE #2: обновлённые приветствия (точные формулировки) ----
 T = {
     "en": {
-        "welcome": "Hi! I’m TendAI — your health & longevity assistant.\nDescribe what’s bothering you or tap below.",
+        "welcome": "Hi! I’m TendAI — your personal health & longevity assistant.\nDescribe what’s bothering you or tap below.",
         "help": "Short checkups, 24–48h plans, reminders, daily check-ins.\nCommands: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /ru /uk /en",
         "privacy": "TendAI is not a medical service and can’t replace a doctor. We store minimal data for reminders. /delete_data to erase.",
         "paused_on": "Notifications paused. Use /resume to enable.", "paused_off": "Notifications resumed.",
@@ -154,12 +156,13 @@ T = {
         "daily_gm":"Good morning! Quick daily check-in:",
         "mood_good":"😃 Good","mood_ok":"😐 Okay","mood_bad":"😣 Poor","mood_note":"✍️ Comment",
         "mood_thanks":"Thanks! Have a smooth day 👋",
+        "btn_like":"👍","btn_dislike":"👎",
         "start_intake_now":"Start quick intake now?",
         "start_yes":"Start","start_no":"Later",
-        "comment_btn":"📝 Comment","skip_btn":"⏭️ Skip"
     },
     "ru": {
-        "welcome":"Привет! Я TendAI — ассистент здоровья и долголетия.\nОпиши, что беспокоит, или выбери ниже.",
+        # точная формулировка приветствия по запросу
+        "welcome":"Привет! Я TendAI — твой персональный ассистент по здоровью и долголетию.\nОпиши, что беспокоит, или выбери ниже.",
         "help":"Короткие проверки, план на 24–48 ч, напоминания, ежедневные чек-ины.\nКоманды: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +3 /ru /uk /en",
         "privacy":"TendAI не заменяет врача. Храним минимум данных для напоминаний. /delete_data — удалить.",
         "paused_on":"Напоминания поставлены на паузу. /resume — включить.", "paused_off":"Напоминания снова включены.",
@@ -194,20 +197,18 @@ T = {
         "p_step_3":"Шаг 3/8. Главная цель:","p_step_4":"Шаг 4/8. Хронические болезни:",
         "p_step_5":"Шаг 5/8. Лекарства/добавки/аллергии:",
         "p_step_6":"Шаг 6/8. Сон (отбой/подъём, напр. 23:30/07:00):",
-        "p_step_7":"Шаг 7/8. Активность:","п_step_8":"Шаг 8/8. Питание чаще всего:",  # укр исправляли; тут ru норм
-        "p_step_8":"Шаг 8/8. Питание чаще всего:",
+        "p_step_7":"Шаг 7/8. Активность:","p_step_8":"Шаг 8/8. Питание чаще всего:",
         "write":"✍️ Написать","skip":"⏭️ Пропустить","saved_profile":"Сохранил: ",
         "start_where":"С чего начнём? (симптом/сон/питание/анализы/привычки/долголетие)",
         "daily_gm":"Доброе утро! Быстрый чек-ин:",
-        "mood_good":"😃 Хорошо","mood_ok":"😐 Нормально","mood_bad":"😣 Плохо","мood_note":"✍️ Комментарий",
-        "mood_note":"✍️ Комментарий",
+        "mood_good":"😃 Хорошо","mood_ok":"😐 Нормально","mood_bad":"😣 Плохо","mood_note":"✍️ Комментарий",
         "mood_thanks":"Спасибо! Хорошего дня 👋",
+        "btn_like":"👍","btn_dislike":"👎",
         "start_intake_now":"Запустить быстрый опрос сейчас?",
         "start_yes":"Начать","start_no":"Позже",
-        "comment_btn":"📝 Комментарий","skip_btn":"⏭️ Пропустить"
     },
     "uk": {
-        "welcome":"Привіт! Я TendAI — асистент здоров’я та довголіття.\nОпиши, що турбує, або обери нижче.",
+        "welcome":"Привіт! Я TendAI — твій персональний асистент зі здоров’я та довголіття.\nОпиши, що турбує, або обери нижче.",
         "help":"Короткі перевірки, план на 24–48 год, нагадування, щоденні чек-іни.\nКоманди: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /ru /uk /en",
         "privacy":"TendAI не замінює лікаря. Зберігаємо мінімум даних для нагадувань. /delete_data — видалити.",
         "paused_on":"Нагадування призупинені. /resume — увімкнути.", "paused_off":"Нагадування знову увімкнені.",
@@ -248,13 +249,43 @@ T = {
         "daily_gm":"Доброго ранку! Швидкий чек-ін:",
         "mood_good":"😃 Добре","mood_ok":"😐 Нормально","mood_bad":"😣 Погано","mood_note":"✍️ Коментар",
         "mood_thanks":"Дякую! Гарного дня 👋",
+        "btn_like":"👍","btn_dislike":"👎",
         "start_intake_now":"Запустити швидкий опитник зараз?",
         "start_yes":"Почати","start_no":"Пізніше",
-        "comment_btn":"📝 Коментар","skip_btn":"⏭️ Пропустити"
     },
 }
+
+# ---- CHANGE #1: адаптивный язык для любых языков (с автопереводом, если T не знает)
+DYNAMIC_CACHE: Dict[tuple, str] = {}
+
 def t(lang: str, key: str) -> str:
-    return T.get(lang, T["en"]).get(key, T["en"].get(key, key))
+    # если язык поддерживаем — обычный словарь
+    if lang in T and key in T[lang]:
+        return T[lang][key]
+    # иначе: берём английскую базу и, если есть OpenAI, переводим в нужный язык
+    base = T["en"].get(key, key)
+    if not oai or not lang:
+        return base
+    ck = (lang, key)
+    if ck in DYNAMIC_CACHE:
+        return DYNAMIC_CACHE[ck]
+    try:
+        resp = oai.chat.completions.create(
+            model=OPENAI_MODEL,
+            temperature=0.1,
+            max_tokens=120,
+            messages=[
+                {"role":"system","content":f"Translate to {lang}. Keep it short, friendly, and natural."},
+                {"role":"user","content":base}
+            ]
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        if out:
+            DYNAMIC_CACHE[ck] = out
+            return out
+    except Exception as e:
+        logging.error(f"i18n translate error: {e}")
+    return base
 
 # ----------------- Helpers -----------------
 def utcnow(): return datetime.now(timezone.utc)
@@ -265,7 +296,10 @@ def detect_lang_from_text(text: str, fallback: str) -> str:
     s = (text or "").strip()
     if not s: return fallback
     try:
-        return norm_lang(detect(s))
+        lg = detect(s)
+        lg = lg.split('-')[0].lower()
+        # если это один из RU/UK — нормализуем; иначе оставляем как есть (перевод сделает t())
+        return lg if lg in SUPPORTED else lg
     except Exception:
         if re.search(r"[а-яёіїєґ]", s.lower()):
             return "uk" if re.search(r"[іїєґ]", s.lower()) else "ru"
@@ -274,22 +308,6 @@ def detect_lang_from_text(text: str, fallback: str) -> str:
 def profile_is_incomplete(profile_row: dict) -> bool:
     keys = ["sex","age","goal"]
     return sum(1 for k in keys if str(profile_row.get(k) or "").strip()) < 2
-
-def msg_norm(s: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", (s or "").lower())).strip()
-
-async def send_unique(bot, chat_id: int, text: str, uid: int, reply_markup=None):
-    """Не повторять одну мысль трижды подряд."""
-    s = sessions.setdefault(uid, {})
-    buf = s.setdefault("last_msgs", [])
-    norm = msg_norm(text)
-    if norm and (norm in buf[-3:]):  # защита от повторов
-        logging.info("skip duplicate message")
-        return
-    msg = await bot.send_message(chat_id, text, reply_markup=reply_markup)
-    buf.append(norm)
-    if len(buf) > 12: buf[:] = buf[-12:]
-    return msg
 
 # -------- Sheets wrappers (fallback to memory) --------
 def _headers(ws): return ws.row_values(1)
@@ -305,20 +323,14 @@ def users_upsert(uid: int, username: str, lang: str):
     base = {"user_id": str(uid), "username": username or "", "lang": lang,
             "consent": "no", "tz_offset":"0", "checkin_hour": DEFAULT_CHECKIN_LOCAL, "paused":"no"}
     if SHEETS_ENABLED:
-        existing = users_get(uid) or {}
-        merged = {**base, **existing}
-        hdr = _headers(ws_users)
-        row_values = [merged.get(h, "") for h in hdr]
         vals = ws_users.get_all_records()
         for i, r in enumerate(vals, start=2):
             if str(r.get("user_id")) == str(uid):
-                end_cell = gsu.rowcol_to_a1(i, len(hdr))
-                end_col = re.sub(r'\d+', '', end_cell)
-                ws_users.update(f"A{i}:{end_col}{i}", [row_values])
+                ws_users.update(f"A{i}:G{i}", [[base[k] for k in _headers(ws_users)]])
                 return
-        ws_users.append_row(row_values)
+        ws_users.append_row([base[k] for k in _headers(ws_users)])
     else:
-        MEM_USERS[uid] = {**base, **MEM_USERS.get(uid, {})}
+        MEM_USERS[uid] = base
 
 def users_set(uid: int, field: str, value: str):
     if SHEETS_ENABLED:
@@ -352,8 +364,8 @@ def profiles_upsert(uid: int, data: dict):
             current[k] = "" if v is None else (", ".join(v) if isinstance(v,list) else str(v))
         current["updated_at"] = iso(utcnow())
         values = [current.get(h,"") for h in hdr]
-        end_cell = gsu.rowcol_to_a1(1, len(hdr)).replace("1","")
-        if idx: ws_profiles.update(f"A{idx}:{end_cell}{idx}", [values])
+        end_col = gsu.rowcol_to_a1(1, len(hdr)).rstrip("1")
+        if idx: ws_profiles.update(f"A{idx}:{end_col}{idx}", [values])
         else:   ws_profiles.append_row(values)
     else:
         row = MEM_PROFILES.setdefault(uid, {"user_id": str(uid)})
@@ -482,7 +494,7 @@ async def job_checkin_episode(context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(u.get("lang") or "en")
     kb = inline_numbers_0_10()
     try:
-        await send_unique(context.bot, uid, t(lang,"checkin_ping"), uid, reply_markup=kb)
+        await context.bot.send_message(uid, t(lang,"checkin_ping"), reply_markup=kb)
         episode_set(eid, "next_checkin_at", "")
     except Exception as e:
         logging.error(f"job_checkin_episode send error: {e}")
@@ -494,7 +506,7 @@ async def job_oneoff_reminder(context: ContextTypes.DEFAULT_TYPE):
     for r in reminders_all_records():
         if r.get("id")==rid: text = r.get("text") or text; break
     try:
-        await send_unique(context.bot, uid, text, uid)
+        await context.bot.send_message(uid, text)
     except Exception as e:
         logging.error(f"reminder send error: {e}")
     reminders_mark_sent(rid)
@@ -511,7 +523,7 @@ async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(T[lang]["mood_note"], callback_data="mood|note")]
     ])
     try:
-        await send_unique(context.bot, uid, T[lang]["daily_gm"], uid, reply_markup=kb)
+        await context.bot.send_message(uid, T[lang]["daily_gm"], reply_markup=kb)
     except Exception as e:
         logging.error(f"daily checkin error: {e}")
 
@@ -551,61 +563,6 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
         logging.error(f"router LLM error: {e}")
         return {"intent":"other","assistant_reply":t(lang,"unknown"),"followups":[],"needs_more":True,"red_flags":False,"confidence":0.3}
 
-# ---- Serious conditions (hepatitis/diabetes/cancer etc.) ----
-SERIOUS_MAP = {
-    "hepat": "hepatitis", "гепат": "hepatitis",
-    "diabet": "diabetes", "диабет": "diabetes", "цукр": "diabetes",
-    "onc": "cancer", "рак": "cancer", "tumor": "cancer", "опухол": "cancer"
-}
-def detect_serious(text: str) -> Optional[str]:
-    tl = text.lower()
-    for k,v in SERIOUS_MAP.items():
-        if k in tl: return v
-    return None
-
-def serious_reply(lang: str, condition: str, prof: dict) -> Tuple[str, List[str]]:
-    age = prof.get("age") or ""
-    sex = prof.get("sex") or ""
-    intro = {
-        "ru": f"Понял. Учитываю профиль (возраст {age or 'не указан'}, пол {sex or '—'}).",
-        "uk": f"Зрозумів. Враховую профіль (вік {age or 'не вказано'}, стать {sex or '—'}).",
-        "en": f"Got it. Considering your profile (age {age or 'n/a'}, sex {sex or '—'})."
-    }[lang]
-    if condition=="hepatitis":
-        body = {
-            "ru": "По гепатиту важно: последние анализы (АЛТ/АСТ, билирубин, HBsAg/anti-HCV), симптомы, алкоголь/лекарства. Пока — режим щадящий, вода, исключить алкоголь/гепатотоксичные препараты.",
-            "uk": "Щодо гепатиту важливо: останні аналізи (АЛТ/АСТ, білірубін, HBsAg/anti-HCV), симптоми, алкоголь/ліки. Поки що — щадний режим, вода, виключити алкоголь та гепатотоксичні препарати.",
-            "en": "For hepatitis: key items are latest labs (ALT/AST, bilirubin, HBsAg/anti-HCV), symptoms, alcohol/meds. Meanwhile: gentle regimen, hydration, avoid alcohol/hepatotoxic meds."
-        }[lang]
-        follow = {
-            "ru": ["Есть ли результаты анализов? (АЛТ/АСТ/билирубин)", "Были ли желтушность кожи/глаз, тёмная моча, сильная слабость?"],
-            "uk": ["Є результати аналізів? (АЛТ/АСТ/білірубін)", "Були жовтушність шкіри/очей, темна сеча, сильна слабкість?"],
-            "en": ["Do you have lab results? (ALT/AST/bilirubin)", "Any jaundice, dark urine, marked fatigue?"]
-        }[lang]
-    elif condition=="diabetes":
-        body = {
-            "ru": "Для диабета уточним: тип, текущие сахара/НbA1c, лекарства, эпизоды гипо. Ближайшая цель: стабильный сахар, шаги после еды, вода.",
-            "uk": "Для діабету: тип, поточні цукри/HbA1c, ліки, епізоди гіпо. Мета: стабільний цукор, кроки після їжі, вода.",
-            "en": "For diabetes: type, current glucose/HbA1c, meds, hypoglycemia episodes. Near goal: steady glucose, post-meal walking, hydration."
-        }[lang]
-        follow = {
-            "ru": ["Какой тип? Последний HbA1c?", "Какие препараты принимаете? Были гипо-эпизоды?"],
-            "uk": ["Який тип? Останній HbA1c?", "Які препарати приймаєте? Були епізоди гіпо?"],
-            "en": ["Which type? Latest HbA1c?", "What meds are you on? Any hypo episodes?"]
-        }[lang]
-    else:  # cancer
-        body = {
-            "ru": "По онкологии лучше опираться на выписку: стадия, гистология, текущая схема лечения. Я помогу с питанием, сном, побочками, восстановлением.",
-            "uk": "По онкології важлива виписка: стадія, гістологія, поточна схема лікування. Допоможу з харчуванням, сном, побічками, відновленням.",
-            "en": "For cancer, anchor on the discharge note: stage, histology, current regimen. I can help with nutrition, sleep, side-effects, recovery."
-        }[lang]
-        follow = {
-            "ru": ["Есть ли выписка/стадия/лечение?", "Что беспокоит сейчас сильнее всего? Боль/тошнота/сон/аппетит?"],
-            "uk": ["Є виписка/стадія/лікування?", "Що турбує зараз найбільше? Біль/нудота/сон/апетит?"],
-            "en": ["Do you have discharge/stage/therapy plan?", "What troubles you most now? Pain/nausea/sleep/appetite?"]
-        }[lang]
-    return f"{intro}\n{body}", follow
-
 # --------- Inline keyboards ---------
 def inline_topic_kb(lang:str) -> InlineKeyboardMarkup:
     items = [
@@ -618,7 +575,7 @@ def inline_topic_kb(lang:str) -> InlineKeyboardMarkup:
         "ru":["Боль","Горло/простуда","Сон","Стресс","Пищеварение","Энергия","Питание","Анализы","Привычки","Долголетие","Профиль"],
         "uk":["Біль","Горло/застуда","Сон","Стрес","Травлення","Енергія","Харчування","Аналізи","Звички","Довголіття","Профіль"],
         "en":[x[0] for x in items]
-    }[lang]
+    }.get(lang, [x[0] for x in items])
     keys = [x[1] for x in items]
     rows=[]; row=[]
     for label,key in zip(by_lang, keys):
@@ -654,10 +611,6 @@ def inline_remind(lang:str) -> InlineKeyboardMarkup:
     rows=[[InlineKeyboardButton(labs[i], callback_data=f"rem|{keys[i]}") for i in range(4)]]
     return InlineKeyboardMarkup(rows)
 
-def inline_feedback(lang:str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["comment_btn"], callback_data="fb|comment"),
-                                  InlineKeyboardButton(T[lang]["skip_btn"], callback_data="fb|skip")]])
-
 # ------------- Plans -------------
 def pain_plan(lang: str, red_flags_selected: List[str]) -> List[str]:
     flg = [s for s in red_flags_selected if s and str(s).lower() not in ["none","нет","немає"]]
@@ -666,7 +619,7 @@ def pain_plan(lang: str, red_flags_selected: List[str]) -> List[str]:
             "ru":["⚠️ Есть тревожные признаки. Лучше как можно скорее показаться врачу/в скорую."],
             "uk":["⚠️ Є тривожні ознаки. Варто якнайшвидше звернутися до лікаря/швидкої."],
             "en":["⚠️ Red flags present. Please seek urgent medical evaluation."]
-        }[lang]
+        }.get(lang, ["⚠️ Please seek urgent medical evaluation."])
     if lang=="ru":
         return ["1) Вода 400–600 мл и 15–20 мин тишины/отдыха.",
                 "2) Если нет противопоказаний — ибупрофен 200–400 мг однократно с едой.",
@@ -725,31 +678,33 @@ PROFILE_STEPS = [
         "uk":[("Збалансовано","balanced"),("Маловугл/кето","lowcarb"),("Вегетар/веган","plant"),("Нерегулярно","irregular")],
     }},
 ]
-
 def build_profile_kb(lang:str, key:str, opts:List[Tuple[str,str]])->InlineKeyboardMarkup:
     rows=[]; row=[]
     for label,val in opts:
         row.append(InlineKeyboardButton(label, callback_data=f"p|choose|{key}|{val}"))
         if len(row)==3: rows.append(row); row=[]
     if row: rows.append(row)
-    rows.append([InlineKeyboardButton(T[lang]["write"], callback_data=f"p|write|{key}"),
-                 InlineKeyboardButton(T[lang]["skip"],  callback_data=f"p|skip|{key}")])
+    rows.append([InlineKeyboardButton(t(lang,"write"), callback_data=f"p|write|{key}"),
+                 InlineKeyboardButton(t(lang,"skip"),  callback_data=f"p|skip|{key}")])
     return InlineKeyboardMarkup(rows)
 
-async def start_profile(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
+async def start_profile(update: Update, lang: str, uid: int):
+    # фиксируем язык из сессии, если есть (исключаем смешение языков)
+    lang = sessions.get(uid, {}).get("force_lang", lang)
     sessions[uid] = {**sessions.get(uid, {}), "profile_active": True, "p_step": 0, "p_wait_key": None}
-    await send_unique(context.bot, chat_id, T[lang]["profile_intro"], uid, reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(t(lang,"profile_intro"), reply_markup=ReplyKeyboardRemove())
     step = PROFILE_STEPS[0]
-    kb = build_profile_kb(lang, step["key"], step["opts"][lang])
-    await send_unique(context.bot, chat_id, T[lang]["p_step_1"], uid, reply_markup=kb)
+    kb = build_profile_kb(lang, step["key"], step["opts"].get(lang, step["opts"]["en"]))
+    await update.message.reply_text(t(lang,"p_step_1"), reply_markup=kb)
 
-async def advance_profile(message_obj, context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
+async def advance_profile(msg, lang: str, uid: int):
+    lang = sessions.get(uid, {}).get("force_lang", lang)
     s = sessions.get(uid, {})
     s["p_step"] += 1
     if s["p_step"] < len(PROFILE_STEPS):
         idx = s["p_step"]; step = PROFILE_STEPS[idx]
-        kb = build_profile_kb(lang, step["key"], step["opts"][lang])
-        await send_unique(context.bot, chat_id, T[lang][f"p_step_{idx+1}"], uid, reply_markup=kb)
+        kb = build_profile_kb(lang, step["key"], step["opts"].get(lang, step["opts"]["en"]))
+        await msg.reply_text(t(lang, f"p_step_{idx+1}"), reply_markup=kb)
         return
     prof = profiles_get(uid); summary=[]
     for k in ["sex","age","goal","conditions","meds","sleep","activity","diet"]:
@@ -757,8 +712,8 @@ async def advance_profile(message_obj, context: ContextTypes.DEFAULT_TYPE, chat_
         if v: summary.append(f"{k}: {v}")
     profiles_upsert(uid, {})
     sessions[uid]["profile_active"] = False
-    await send_unique(context.bot, chat_id, T[lang]["saved_profile"] + "; ".join(summary), uid)
-    await send_unique(context.bot, chat_id, T[lang]["start_where"], uid, reply_markup=inline_topic_kb(lang))
+    await msg.reply_text(t(lang,"saved_profile") + "; ".join(summary))
+    await msg.reply_text(t(lang,"start_where"), reply_markup=inline_topic_kb(lang))
 
 # ------------- Commands -------------
 async def post_init(app):
@@ -767,39 +722,40 @@ async def post_init(app):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    chat_id = update.effective_chat.id
+    # язык берём из Telegram, фиксируем в сессии (адаптивно, но устойчиво)
     lang = norm_lang(getattr(user, "language_code", None))
+    sessions.setdefault(user.id, {})["force_lang"] = lang  # <= фикс в сессии (чтобы клавиатуры не смешивались)
     users_upsert(user.id, user.username or "", lang)
-    await send_unique(context.bot, chat_id, t(lang,"welcome"), user.id, reply_markup=ReplyKeyboardRemove())
-    await send_unique(context.bot, chat_id, T[lang]["start_intake_now"], user.id,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["start_yes"], callback_data="startintake|yes"),
-                                            InlineKeyboardButton(T[lang]["start_no"],  callback_data="startintake|no")]]))
+    await update.message.reply_text(t(lang,"welcome"), reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(t(lang,"start_intake_now"),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(lang,"start_yes"), callback_data="startintake|yes"),
+                                            InlineKeyboardButton(t(lang,"start_no"),  callback_data="startintake|no")]]))
     u = users_get(user.id)
     if (u.get("consent") or "").lower() not in {"yes","no"}:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang,"yes"), callback_data="consent|yes"),
                                     InlineKeyboardButton(t(lang,"no"),  callback_data="consent|no")]])
-        await send_unique(context.bot, chat_id, t(lang,"ask_consent"), user.id, reply_markup=kb)
+        await update.message.reply_text(t(lang,"ask_consent"), reply_markup=kb)
     tz_off = int(str(u.get("tz_offset") or "0"))
     hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
     schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(update.effective_user.id).get("lang") or "en")
-    await send_unique(context.bot, update.effective_chat.id, t(lang,"help"), update.effective_user.id)
+    await update.message.reply_text(t(lang,"help"))
 
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(update.effective_user.id).get("lang") or "en")
-    await send_unique(context.bot, update.effective_chat.id, t(lang,"privacy"), update.effective_user.id)
+    await update.message.reply_text(t(lang,"privacy"))
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id; users_set(uid, "paused", "yes")
     lang = norm_lang(users_get(uid).get("lang") or "en")
-    await send_unique(context.bot, update.effective_chat.id, t(lang,"paused_on"), uid)
+    await update.message.reply_text(t(lang,"paused_on"))
 
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id; users_set(uid, "paused", "no")
     lang = norm_lang(users_get(uid).get("lang") or "en")
-    await send_unique(context.bot, update.effective_chat.id, t(lang,"paused_off"), uid)
+    await update.message.reply_text(t(lang,"paused_off"))
 
 async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -815,29 +771,26 @@ async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         MEM_REMINDERS = [r for r in MEM_REMINDERS if r["user_id"]!=str(uid)]
         MEM_DAILY = [r for r in MEM_DAILY if r["user_id"]!=str(uid)]
     lang = norm_lang(getattr(update.effective_user,"language_code",None))
-    await send_unique(context.bot, update.effective_chat.id, t(lang,"deleted"), uid, reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(t(lang,"deleted"), reply_markup=ReplyKeyboardRemove())
 
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    chat_id = update.effective_chat.id
-    lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None))
-    await start_profile(context, chat_id, lang, uid)
+    lang = sessions.get(uid, {}).get("force_lang", norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None)))
+    await start_profile(update, lang, uid)
 
 async def cmd_settz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    chat_id = update.effective_chat.id
     lang = norm_lang(users_get(uid).get("lang") or "en")
     parts = (update.message.text or "").split()
     if len(parts)<2 or not re.fullmatch(r"[+-]?\d{1,2}", parts[1]):
-        await send_unique(context.bot, chat_id, {"ru":"Формат: /settz +3","uk":"Формат: /settz +2","en":"Usage: /settz +3"}[lang], uid); return
+        await update.message.reply_text({"ru":"Формат: /settz +3","uk":"Формат: /settz +2","en":"Usage: /settz +3"}[lang]); return
     off = int(parts[1]); users_set(uid,"tz_offset",str(off))
     hhmm = users_get(uid).get("checkin_hour") or DEFAULT_CHECKIN_LOCAL
     schedule_daily_checkin(context.application, uid, off, hhmm, lang)
-    await send_unique(context.bot, chat_id, {"ru":f"Сдвиг часового пояса: {off}ч","uk":f"Зсув: {off} год","en":f"Timezone offset: {off}h"}[lang], uid)
+    await update.message.reply_text({"ru":f"Сдвиг часового пояса: {off}ч","uk":f"Зсув: {off} год","en":f"Timezone offset: {off}h"}[lang])
 
 async def cmd_checkin_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    chat_id = update.effective_chat.id
     lang = norm_lang(users_get(uid).get("lang") or "en")
     parts = (update.message.text or "").split(maxsplit=1)
     hhmm = DEFAULT_CHECKIN_LOCAL
@@ -847,112 +800,107 @@ async def cmd_checkin_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_set(uid,"checkin_hour",hhmm)
     tz_off = int(str(users_get(uid).get("tz_offset") or "0"))
     schedule_daily_checkin(context.application, uid, tz_off, hhmm, lang)
-    await send_unique(context.bot, chat_id, {"ru":f"Ежедневный чек-ин включён ({hhmm}).","uk":f"Щоденний чек-ін увімкнено ({hhmm}).","en":f"Daily check-in enabled ({hhmm})."}[lang], uid)
+    await update.message.reply_text({"ru":f"Ежедневный чек-ин включён ({hhmm}).","uk":f"Щоденний чек-ін увімкнено ({hhmm}).","en":f"Daily check-in enabled ({hhmm})."}[lang])
 
 async def cmd_checkin_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     for j in context.application.job_queue.get_jobs_by_name(f"daily_{uid}"): j.schedule_removal()
-    await send_unique(context.bot, update.effective_chat.id, {"ru":"Ежедневный чек-ин выключен.","uk":"Щоденний чек-ін вимкнено.","en":"Daily check-in disabled."}
-                                    [norm_lang(users_get(uid).get("lang") or "en")], uid)
+    await update.message.reply_text({"ru":"Ежедневный чек-ин выключен.","uk":"Щоденний чек-ін вимкнено.","en":"Daily check-in disabled."}
+                                    [norm_lang(users_get(uid).get("lang") or "en")])
 
-# быстрые команды смены языка
 async def cmd_ru(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_set(update.effective_user.id, "lang", "ru")
-    await send_unique(context.bot, update.effective_chat.id, t("ru","lang_switched"), update.effective_user.id)
+    sessions.setdefault(update.effective_user.id, {})["force_lang"] = "ru"
+    await update.message.reply_text(t("ru","lang_switched"))
 async def cmd_en(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_set(update.effective_user.id, "lang", "en")
-    await send_unique(context.bot, update.effective_chat.id, t("en","lang_switched"), update.effective_user.id)
+    sessions.setdefault(update.effective_user.id, {})["force_lang"] = "en"
+    await update.message.reply_text(t("en","lang_switched"))
 async def cmd_uk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_set(update.effective_user.id, "lang", "uk")
-    await send_unique(context.bot, update.effective_chat.id, t("uk","lang_switched"), update.effective_user.id)
+    sessions.setdefault(update.effective_user.id, {})["force_lang"] = "uk"
+    await update.message.reply_text(t("uk","lang_switched"))
 
 # ------------- Callback handler -------------
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     data = (q.data or ""); uid = q.from_user.id
-    chat_id = q.message.chat.id
-    lang = norm_lang(users_get(uid).get("lang") or "en")
+    lang = sessions.get(uid, {}).get("force_lang", norm_lang(users_get(uid).get("lang") or "en"))
 
     if data.startswith("startintake|"):
         if data.endswith("|yes"):
+            if sessions.get(uid, {}).get("profile_active"):
+                return
             try: await q.delete_message()
             except: pass
-            await start_profile(context, chat_id, lang, uid)
+            await start_profile(update=Update(update.update_id, message=q.message), lang=lang, uid=uid)
         else:
-            await send_unique(context.bot, chat_id, t(lang,"start_where"), uid, reply_markup=inline_topic_kb(lang))
+            await q.message.reply_text(t(lang,"start_where"), reply_markup=inline_topic_kb(lang))
         return
 
     if data.startswith("consent|"):
         users_set(uid, "consent", "yes" if data.endswith("|yes") else "no")
-        try: await q.edit_message_reply_markup(reply_markup=None)
-        except: pass
-        await send_unique(context.bot, chat_id, t(lang,"thanks"), uid); return
+        await q.edit_message_reply_markup(reply_markup=None)
+        await q.message.reply_text(t(lang,"thanks")); return
 
-    if data.startswith("fb|"):
-        if data.endswith("|comment"):
-            sessions.setdefault(uid, {})["awaiting_comment"] = True
-            await send_unique(context.bot, chat_id, t(lang,"comment_prompt"), uid)
-        else:
-            await send_unique(context.bot, chat_id, t(lang,"skip_ok"), uid)
-        try: await q.edit_message_reply_markup(reply_markup=None)
-        except: pass
-        return
+    if data in {"feedback_yes","feedback_no"}:
+        rating = "1" if data.endswith("yes") else "0"
+        feedback_add(iso(utcnow()), uid, q.from_user.full_name or "", q.from_user.username or "", rating, "")
+        sessions.setdefault(uid, {})["awaiting_comment"] = True
+        await q.edit_message_reply_markup(reply_markup=None)
+        await q.message.reply_text(t(lang,"comment_prompt")); return
 
     if data.startswith("topic|"):
         topic = data.split("|",1)[1]
         if topic=="profile":
-            await start_profile(context, chat_id, lang, uid); return
+            if sessions.get(uid, {}).get("profile_active"):
+                return
+            await start_profile(Update(update.update_id, message=q.message), lang, uid); return
         if topic=="pain":
-            await start_pain_triage(context, chat_id, lang, uid); return
+            await start_pain_triage(Update(update.update_id, message=q.message), lang, uid); return
         prof = profiles_get(uid)
         data_llm = llm_router_answer(q.message.text or "", lang, prof)
         reply = data_llm.get("assistant_reply") or t(lang,"unknown")
-        await send_unique(context.bot, chat_id, reply, uid, reply_markup=inline_feedback(lang))
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["btn_like"], callback_data="feedback_yes"),
+                                    InlineKeyboardButton(T[lang]["btn_dislike"], callback_data="feedback_no")]])
+        await q.message.reply_text(reply, reply_markup=kb)
         for one in (data_llm.get("followups") or [])[:2]:
-            await send_unique(context.bot, chat_id, one, uid)
-        await send_unique(context.bot, chat_id, t(lang,"remind_when"), uid, reply_markup=inline_remind(lang))
+            await q.message.reply_text(one)
         return
 
-    # intake callbacks
     if data.startswith("p|"):
         _, action, key, *rest = data.split("|")
         if action=="choose":
             value = "|".join(rest)
             sessions.setdefault(uid,{})[key]=value; profiles_upsert(uid,{key:value})
-            await advance_profile(q.message, context, chat_id, lang, uid); return
+            await advance_profile(q.message, lang, uid); return
         if action=="write":
             sessions.setdefault(uid,{})["p_wait_key"] = key
-            await send_unique(context.bot, chat_id, {"ru":"Напишите короткий ответ:","uk":"Напишіть коротко:","en":"Type your answer:"}[lang], uid); return
+            await q.message.reply_text({"ru":"Напишите короткий ответ:","uk":"Напишіть коротко:","en":"Type your answer:"}.get(lang,"Type your answer:")); return
         if action=="skip":
-            profiles_upsert(uid,{key:""}); await advance_profile(q.message, context, chat_id, lang, uid); return
+            profiles_upsert(uid,{key:""}); await advance_profile(q.message, lang, uid); return
 
-    # daily moods
     if data.startswith("mood|"):
         mood = data.split("|",1)[1]
         if mood=="note":
             sessions.setdefault(uid,{})["awaiting_daily_comment"] = True
-            await send_unique(context.bot, chat_id, {"ru":"Короткий комментарий:","uk":"Короткий коментар:","en":"Short note:"}[lang], uid); return
-        daily_add(iso(utcnow()), uid, mood, ""); await send_unique(context.bot, chat_id, T[lang]["mood_thanks"], uid); return
+            await q.message.reply_text({"ru":"Короткий комментарий:","uk":"Короткий коментар:","en":"Short note:"}.get(lang,"Short note:")); return
+        daily_add(iso(utcnow()), uid, mood, ""); await q.message.reply_text(T[lang]["mood_thanks"]); return
 
-    # pain triage inline options
-    if data.startswith(("painloc|", "painkind|", "paindur|", "painrf|")):
-        label = data.split("|", 1)[1]
-        await continue_pain_triage(context, chat_id, lang, uid, label)
-        try:
-            await q.edit_message_reply_markup(reply_markup=None)
-        except:
-            pass
+    if data.startswith("pain|"):
         return
 
     if data.startswith("num|"):
-        num = int(data.split("|",1)[1])
-        await handle_number_checkin(uid, chat_id, num, context); return
+        num = data.split("|",1)[1]
+        fake_update = Update(update.update_id, message=q.message)
+        fake_update.message.text = num
+        await on_number_reply(fake_update, context); return
 
     if data.startswith("acc|"):
         s = sessions.get(uid, {})
         accepted = "1" if data.endswith("|yes") else "0"
         if s.get("episode_id"): episode_set(s["episode_id"], "plan_accepted", accepted)
-        await send_unique(context.bot, chat_id, t(lang,"remind_when"), uid, reply_markup=inline_remind(lang))
+        await q.message.reply_text(t(lang,"remind_when"), reply_markup=inline_remind(lang))
         s["step"] = 7; return
 
     if data.startswith("rem|"):
@@ -964,10 +912,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             episode_set(s["episode_id"], "next_checkin_at", iso(next_time))
             context.job_queue.run_once(job_checkin_episode, when=delay*3600,
                                        data={"user_id":uid,"episode_id":s["episode_id"]})
-        await send_unique(context.bot, chat_id, t(lang,"thanks"), uid, reply_markup=inline_topic_kb(lang))
+        await q.message.reply_text(t(lang,"thanks"), reply_markup=inline_topic_kb(lang))
         sessions.pop(uid, None); return
 
-# ------------- Topic detection -------------
+# ------------- Pain triage -------------
 def detect_or_choose_topic(lang: str, text: str) -> Optional[str]:
     tx = text.lower()
     if any(w in tx for w in ["опрос","анкета","опит","questionnaire","survey"]): return "profile"
@@ -983,90 +931,71 @@ def detect_or_choose_topic(lang: str, text: str) -> Optional[str]:
     if any(w in tx for w in ["долголет","довголіт","longevity"]): return "longevity"
     return None
 
-# ------------- Pain triage -------------
-async def start_pain_triage(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
-    sessions[uid] = {"topic":"pain","step":1,"answers":{}}
-    kb = inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
-    await send_unique(context.bot, chat_id, t(lang,"triage_pain_q1"), uid, reply_markup=kb)
+async def start_pain_triage(update: Update, lang: str, uid: int):
+    lang = sessions.get(uid, {}).get("force_lang", lang)
+    sessions[uid] = {**sessions.get(uid, {}), "topic":"pain","step":1,"answers":{}}
+    kb = inline_list(T.get(lang, T["en"])["triage_pain_q1_opts"], "painloc")
+    await update.message.reply_text(t(lang,"triage_pain_q1"), reply_markup=kb)
 
-async def continue_pain_triage(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int, text: str):
+async def continue_pain_triage(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str, uid: int, text: str):
+    lang = sessions.get(uid, {}).get("force_lang", lang)
     s = sessions.get(uid, {}); step = s.get("step",1)
 
     if step == 1:
         s["answers"]["loc"] = text; s["step"] = 2
-        await send_unique(context.bot, chat_id, t(lang,"triage_pain_q2"), uid,
-                          reply_markup=inline_list(T[lang]["triage_pain_q2_opts"], "painkind")); return
+        await update.message.reply_text(t(lang,"triage_pain_q2"),
+                                        reply_markup=inline_list(T.get(lang, T["en"])["triage_pain_q2_opts"], "painkind")); return
 
     if step == 2:
         s["answers"]["kind"] = text; s["step"] = 3
-        await send_unique(context.bot, chat_id, t(lang,"triage_pain_q3"), uid,
-                          reply_markup=inline_list(T[lang]["triage_pain_q3_opts"], "paindur")); return
+        await update.message.reply_text(t(lang,"triage_pain_q3"),
+                                        reply_markup=inline_list(T.get(lang, T["en"])["triage_pain_q3_opts"], "paindur")); return
 
     if step == 3:
         s["answers"]["duration"] = text; s["step"] = 4
-        await send_unique(context.bot, chat_id, t(lang,"triage_pain_q4"), uid, reply_markup=inline_numbers_0_10()); return
+        await update.message.reply_text(t(lang,"triage_pain_q4"), reply_markup=inline_numbers_0_10()); return
 
     if step == 4:
         m = re.search(r'\d+', text)
         if not m:
-            await send_unique(context.bot, chat_id, t(lang,"triage_pain_q4"), uid, reply_markup=inline_numbers_0_10()); return
+            await update.message.reply_text(t(lang,"triage_pain_q4"), reply_markup=inline_numbers_0_10()); return
         sev = max(0,min(10,int(m.group(0))))
         s["answers"]["severity"] = sev; s["step"] = 5
-        await send_unique(context.bot, chat_id, t(lang,"triage_pain_q5"), uid,
-                          reply_markup=inline_list(T[lang]["triage_pain_q5_opts"], "painrf")); return
+        await update.message.reply_text(t(lang,"triage_pain_q5"),
+                                        reply_markup=inline_list(T.get(lang, T["en"])["triage_pain_q5_opts"], "painrf")); return
 
     if step == 5:
         red = text; s["answers"]["red"] = red
         eid = episode_create(uid, "pain", int(s["answers"].get("severity",5)), red)
         s["episode_id"] = eid
         plan_lines = pain_plan(lang, [red])
-        await send_unique(context.bot, chat_id, f"{t(lang,'plan_header')}\n" + "\n".join(plan_lines), uid)
-        await send_unique(context.bot, chat_id, t(lang,"plan_accept"), uid, reply_markup=inline_accept(lang))
+        await update.message.reply_text(f"{t(lang,'plan_header')}\n" + "\n".join(plan_lines))
+        await update.message.reply_text(t(lang,"plan_accept"), reply_markup=inline_accept(lang))
         s["step"] = 6; return
-
-# ------------- Number handling (shared) -------------
-async def handle_number_checkin(uid: int, chat_id: int, val: int, context: ContextTypes.DEFAULT_TYPE):
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-
-    if sessions.get(uid,{}).get("topic")=="pain" and sessions[uid].get("step")==4:
-        await continue_pain_triage(context, chat_id, lang, uid, str(val)); return
-
-    ep = episode_find_open(uid)
-    if not ep:
-        await send_unique(context.bot, chat_id, t(lang,"thanks"), uid); return
-    eid = ep.get("episode_id"); episode_set(eid,"notes",f"checkin:{val}")
-
-    if val <= 3:
-        await send_unique(context.bot, chat_id, t(lang,"checkin_better"), uid, reply_markup=inline_topic_kb(lang))
-        episode_set(eid,"status","resolved")
-    else:
-        await send_unique(context.bot, chat_id, t(lang,"checkin_worse"), uid, reply_markup=inline_topic_kb(lang))
 
 # ------------- Text handler -------------
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
-    chat_id = update.effective_chat.id
     text = (update.message.text or "").strip()
     logging.info(f"INCOMING uid={uid} text={text[:200]}")
 
-    saved_lang = norm_lang(users_get(uid).get("lang") or getattr(user,"language_code",None))
-    detected_lang = detect_lang_from_text(text, saved_lang)
-    if detected_lang != saved_lang: users_set(uid,"lang",detected_lang)
+    saved_lang = users_get(uid).get("lang") or getattr(user,"language_code",None) or "en"
+    detected_lang = detect_lang_from_text(text, saved_lang.split('-')[0])
+    # сохраняем в базе "основной" язык (для стабильности RU/EN/UK), а в сессии — реальный детект
+    users_set(uid, "lang", norm_lang(detected_lang))
+    sessions.setdefault(uid, {})["force_lang"] = detected_lang
     lang = detected_lang
 
-    # ежедневный чек-ин — заметка
     if sessions.get(uid, {}).get("awaiting_daily_comment"):
         daily_add(iso(utcnow()), uid, "note", text)
         sessions[uid]["awaiting_daily_comment"] = False
-        await send_unique(context.bot, chat_id, T[lang]["mood_thanks"], uid); return
+        await update.message.reply_text(t(lang,"mood_thanks")); return
 
-    # фидбек-коммент
     if sessions.get(uid, {}).get("awaiting_comment"):
         feedback_add(iso(utcnow()), uid, "comment", user.username or "", "", text)
         sessions[uid]["awaiting_comment"] = False
-        await send_unique(context.bot, chat_id, t(lang,"comment_saved"), uid); return
+        await update.message.reply_text(t(lang,"comment_saved")); return
 
-    # свободный ответ для intake
     if sessions.get(uid, {}).get("p_wait_key"):
         key = sessions[uid]["p_wait_key"]; sessions[uid]["p_wait_key"] = None
         val = text
@@ -1074,59 +1003,64 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             m = re.search(r'\d{2}', text)
             if m: val = m.group(0)
         profiles_upsert(uid,{key:val}); sessions[uid][key]=val
-        await advance_profile(update.message, context, chat_id, lang, uid); return
+        await advance_profile(update.message, lang, uid); return
 
-    # если профиль пуст — запускаем intake сразу
     prof = profiles_get(uid)
     if not sessions.get(uid,{}).get("profile_active") and profile_is_incomplete(prof):
-        await start_profile(context, chat_id, lang, uid); return
+        await start_profile(update, lang, uid); return
 
-    # активный триаж боли
     if sessions.get(uid,{}).get("topic") == "pain":
-        await continue_pain_triage(context, chat_id, lang, uid, text); return
-
-    # серьёзные диагнозы
-    serious = detect_serious(text)
-    if serious:
-        reply, follow = serious_reply(lang, serious, prof)
-        await send_unique(context.bot, chat_id, reply, uid, reply_markup=inline_feedback(lang))
-        for f in follow:
-            await send_unique(context.bot, chat_id, f, uid)
-        await send_unique(context.bot, chat_id, t(lang,"remind_when"), uid, reply_markup=inline_remind(lang))
-        return
+        await continue_pain_triage(update, context, lang, uid, text); return
 
     topic = detect_or_choose_topic(lang, text)
     if topic == "profile":
-        await start_profile(context, chat_id, lang, uid); return
+        if sessions.get(uid, {}).get("profile_active"):  # не дублируем
+            return
+        await start_profile(update, lang, uid); return
     if topic == "pain":
-        await start_pain_triage(context, chat_id, lang, uid); return
+        await start_pain_triage(update, lang, uid); return
     if topic in {"throat","sleep","stress","digestion","energy","nutrition","labs","habits","longevity"}:
-        data = llm_router_answer(text, lang, prof)
+        data = llm_router_answer(text, lang, profiles_get(uid))
         reply = data.get("assistant_reply") or t(lang,"unknown")
-        await send_unique(context.bot, chat_id, reply, uid, reply_markup=inline_feedback(lang))
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(T.get(lang,T["en"])["btn_like"], callback_data="feedback_yes"),
+                                    InlineKeyboardButton(T.get(lang,T["en"])["btn_dislike"], callback_data="feedback_no")]])
+        await update.message.reply_text(reply, reply_markup=kb)
         for one in (data.get("followups") or [])[:2]:
-            await send_unique(context.bot, chat_id, one, uid)
-        await send_unique(context.bot, chat_id, t(lang,"remind_when"), uid, reply_markup=inline_remind(lang))
+            await update.message.reply_text(one)
         return
 
-    # общий фолбэк
-    data = llm_router_answer(text, lang, prof)
+    data = llm_router_answer(text, lang, profiles_get(uid))
     reply = data.get("assistant_reply") or t(lang,"unknown")
-    await send_unique(context.bot, chat_id, reply, uid, reply_markup=inline_feedback(lang))
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(T.get(lang,T["en"])["btn_like"], callback_data="feedback_yes"),
+                                InlineKeyboardButton(T.get(lang,T["en"])["btn_dislike"], callback_data="feedback_no")]])
+    await update.message.reply_text(reply, reply_markup=kb)
     for one in (data.get("followups") or [])[:2]:
-        await send_unique(context.bot, chat_id, one, uid)
-    await send_unique(context.bot, chat_id, t(lang,"remind_when"), uid, reply_markup=inline_remind(lang))
+        await update.message.reply_text(one)
 
 # ------------- Number replies (0–10 typed) -------------
 async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user; uid = user.id
+    text = update.message.text.strip()
     try:
-        val = int((update.message.text or "").strip())
+        val = int(text)
         if not (0 <= val <= 10): return
     except Exception:
         return
-    uid = update.effective_user.id
-    chat_id = update.effective_chat.id
-    await handle_number_checkin(uid, chat_id, val, context)
+    lang = sessions.get(uid, {}).get("force_lang", norm_lang(users_get(uid).get("lang") or getattr(user,"language_code",None)))
+
+    if sessions.get(uid,{}).get("topic")=="pain" and sessions[uid].get("step")==4:
+        await continue_pain_triage(update, context, lang, uid, str(val)); return
+
+    ep = episode_find_open(uid)
+    if not ep:
+        await update.message.reply_text(t(lang,"thanks")); return
+    eid = ep.get("episode_id"); episode_set(eid,"notes",f"checkin:{val}")
+
+    if val <= 3:
+        await update.message.reply_text(t(lang,"checkin_better"), reply_markup=inline_topic_kb(lang))
+        episode_set(eid,"status","resolved")
+    else:
+        await update.message.reply_text(t(lang,"checkin_worse"), reply_markup=inline_topic_kb(lang))
 
 # ------------- App init -------------
 def main():
