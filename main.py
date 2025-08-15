@@ -254,13 +254,16 @@ def iso(dt: Optional[datetime]) -> str:
     return "" if not dt else dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z")
 
 def detect_lang_from_text(text: str, fallback: str) -> str:
+    """Сначала проверяем алфавит (кириллица/укр), затем langdetect (на случай латиницы)."""
     s = (text or "").strip()
     if not s: return fallback
+    low = s.lower()
+    # укр. спецсимволы — укр; иначе кириллица — рус
+    if re.search(r"[а-яёіїєґ]", low):
+        return "uk" if re.search(r"[іїєґ]", low) else "ru"
     try:
         return norm_lang(detect(s))
     except Exception:
-        if re.search(r"[а-яёіїєґ]", s.lower()):
-            return "uk" if re.search(r"[іїєґ]", s.lower()) else "ru"
         return fallback
 
 def profile_is_incomplete(profile_row: dict) -> bool:
@@ -518,7 +521,7 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
         logging.error(f"router LLM error: {e}")
         return {"intent":"other","assistant_reply":t(lang,"unknown"),"followups":[],"needs_more":True,"red_flags":False,"confidence":0.3}
 
-# --------- Inline keyboards (no sticky ReplyKeyboard) ---------
+# --------- Inline keyboards ---------
 def inline_topic_kb(lang:str) -> InlineKeyboardMarkup:
     items = [
         ("Pain","pain"),("Throat/Cold","throat"),("Sleep","sleep"),("Stress","stress"),
@@ -633,6 +636,7 @@ PROFILE_STEPS = [
         "uk":[("Збалансовано","balanced"),("Маловугл/кето","lowcarb"),("Вегетар/веган","plant"),("Нерегулярно","irregular")],
     }},
 ]
+
 def build_profile_kb(lang:str, key:str, opts:List[Tuple[str,str]])->InlineKeyboardMarkup:
     rows=[]; row=[]
     for label,val in opts:
@@ -650,13 +654,13 @@ async def start_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, la
     kb = build_profile_kb(lang, step["key"], step["opts"][lang])
     await context.bot.send_message(chat_id, T[lang]["p_step_1"], reply_markup=kb)
 
-async def advance_profile_msg(message, context: ContextTypes.DEFAULT_TYPE, lang: str, uid: int):
+async def advance_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
     s = sessions.get(uid, {})
     s["p_step"] += 1
     if s["p_step"] < len(PROFILE_STEPS):
         idx = s["p_step"]; step = PROFILE_STEPS[idx]
         kb = build_profile_kb(lang, step["key"], step["opts"][lang])
-        await context.bot.send_message(message.chat_id, T[lang][f"p_step_{idx+1}"], reply_markup=kb)
+        await context.bot.send_message(chat_id, T[lang][f"p_step_{idx+1}"], reply_markup=kb)
         return
     prof = profiles_get(uid); summary=[]
     for k in ["sex","age","goal","conditions","meds","sleep","activity","diet"]:
@@ -664,8 +668,8 @@ async def advance_profile_msg(message, context: ContextTypes.DEFAULT_TYPE, lang:
         if v: summary.append(f"{k}: {v}")
     profiles_upsert(uid, {})
     sessions[uid]["profile_active"] = False
-    await context.bot.send_message(message.chat_id, T[lang]["saved_profile"] + "; ".join(summary))
-    await context.bot.send_message(message.chat_id, T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
+    await context.bot.send_message(chat_id, T[lang]["saved_profile"] + "; ".join(summary))
+    await context.bot.send_message(chat_id, T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
 
 # ------------- Commands & init -------------
 async def post_init(app):
@@ -677,15 +681,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(getattr(user, "language_code", None))
     users_upsert(user.id, user.username or "", lang)
     await update.message.reply_text(t(lang,"welcome"), reply_markup=ReplyKeyboardRemove())
-    # сразу стартуем intake
     await start_profile_ctx(context, update.effective_chat.id, lang, user.id)
-    # спросим согласие на фоллоу-ап
     u = users_get(user.id)
     if (u.get("consent") or "").lower() not in {"yes","no"}:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang,"yes"), callback_data="consent|yes"),
                                     InlineKeyboardButton(t(lang,"no"),  callback_data="consent|no")]])
         await update.message.reply_text(t(lang,"ask_consent"), reply_markup=kb)
-    # планируем ежедневный чек-ин
     tz_off = int(str(u.get("tz_offset") or "0"))
     hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
     schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)
@@ -759,7 +760,6 @@ async def cmd_checkin_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text({"ru":"Ежедневный чек-ин выключен.","uk":"Щоденний чек-ін вимкнено.","en":"Daily check-in disabled."}
                                     [norm_lang(users_get(uid).get("lang") or "en")])
 
-# быстрые команды смены языка
 async def cmd_ru(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_set(update.effective_user.id, "lang", "ru")
     await update.message.reply_text(t("ru","lang_switched"))
@@ -775,9 +775,28 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     data = (q.data or ""); uid = q.from_user.id
     lang = norm_lang(users_get(uid).get("lang") or "en")
-    chat_id = q.message.chat_id
+    chat_id = q.message.chat.id
 
-    # intake start consent
+    # intake steps (FIXED)
+    if data.startswith("p|"):
+        _, action, key, *rest = data.split("|")
+        s = sessions.setdefault(uid, {"profile_active": True, "p_step": 0})
+        if action == "choose":
+            value = "|".join(rest) if rest else ""
+            s[key] = value
+            profiles_upsert(uid, {key: value})
+            await advance_profile_ctx(context, chat_id, lang, uid)
+            return
+        if action == "write":
+            s["p_wait_key"] = key
+            await q.message.reply_text({"ru":"Напишите короткий ответ:","uk":"Напишіть коротко:","en":"Type your answer:"}[lang])
+            return
+        if action == "skip":
+            profiles_upsert(uid, {key: ""})
+            await advance_profile_ctx(context, chat_id, lang, uid)
+            return
+
+    # consent
     if data.startswith("consent|"):
         users_set(uid, "consent", "yes" if data.endswith("|yes") else "no")
         try: await q.edit_message_reply_markup(reply_markup=None)
@@ -808,7 +827,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await start_profile_ctx(context, chat_id, lang, uid); return
         if topic=="pain":
             await start_pain_triage_ctx(context, chat_id, lang, uid); return
-        # остальные темы — LLM
         prof = profiles_get(uid)
         data_llm = llm_router_answer(q.message.text or "", lang, prof)
         reply = data_llm.get("assistant_reply") or t(lang,"unknown")
@@ -874,7 +892,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(t(lang,"thanks"), reply_markup=inline_topic_kb(lang))
         sessions.pop(uid, None); return
 
-# ------------- Pain triage (start/continue via context) -------------
+# ------------- Pain triage (start) -------------
 def detect_or_choose_topic(lang: str, text: str) -> Optional[str]:
     tx = text.lower()
     if any(w in tx for w in ["опрос","анкета","опит","questionnaire","survey"]): return "profile"
@@ -901,23 +919,20 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     logging.info(f"INCOMING uid={uid} text={text[:200]}")
 
-    # первичное сохранение пользователя + приветствие + немедленный intake
+    # первичное сохранение пользователя + приветствие + intake
     urec = users_get(uid)
     if not urec:
-        # автоязык по тексту или телеграм-коду
         lang_guess = detect_lang_from_text(text, norm_lang(getattr(user, "language_code", None)))
         users_upsert(uid, user.username or "", lang_guess)
         await update.message.reply_text(t(lang_guess, "welcome"), reply_markup=ReplyKeyboardRemove())
         await start_profile_ctx(context, update.effective_chat.id, lang_guess, uid)
-        # запрос согласия на напоминания
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang_guess,"yes"), callback_data="consent|yes"),
                                     InlineKeyboardButton(t(lang_guess,"no"),  callback_data="consent|no")]])
         await update.message.reply_text(t(lang_guess,"ask_consent"), reply_markup=kb)
-        # запланировать daily check-in по умолчанию
         schedule_daily_checkin(context.application, uid, 0, DEFAULT_CHECKIN_LOCAL, lang_guess)
         return
 
-    # динамическое обновление языка на лету
+    # динамическая смена языка
     saved_lang = norm_lang(urec.get("lang") or getattr(user,"language_code",None))
     detected_lang = detect_lang_from_text(text, saved_lang)
     if detected_lang != saved_lang:
@@ -941,19 +956,28 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = sessions[uid]["p_wait_key"]; sessions[uid]["p_wait_key"] = None
         val = text
         if key=="age":
-            m = re.search(r'\d{2}', text); 
+            m = re.search(r'\d{2}', text)
             if m: val = m.group(0)
         profiles_upsert(uid,{key:val}); sessions[uid][key]=val
-        await advance_profile_msg(update.message, context, lang, uid); return
+        await advance_profile_ctx(context, update.effective_chat.id, lang, uid); return
 
     # если профиль пуст — запускаем intake сразу
     prof = profiles_get(uid)
     if not sessions.get(uid,{}).get("profile_active") and profile_is_incomplete(prof):
         await start_profile_ctx(context, update.effective_chat.id, lang, uid); return
 
-    # активный pain триаж (если пользователь отвечает текстом, а не кнопками)
-    if sessions.get(uid,{}).get("topic") == "pain":
-        # мягкая подсказка — используем кнопки
+    # активный pain-триаж: если пользователь ввёл число вручную на шаге 4
+    s = sessions.get(uid, {})
+    if s.get("topic")=="pain" and s.get("step")==4:
+        m = re.fullmatch(r"(?:10|[0-9])", text)
+        if m:
+            sev = int(m.group(0))
+            s.setdefault("answers",{})["severity"] = sev
+            s["step"] = 5
+            await update.message.reply_text(t(lang,"triage_pain_q5"),
+                                            reply_markup=inline_list(T[lang]["triage_pain_q5_opts"], "painrf"))
+            return
+        # иначе мягко подсказка
         await update.message.reply_text(t(lang,"triage_pain_q4"), reply_markup=inline_numbers_0_10())
         return
 
@@ -982,7 +1006,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for one in (data.get("followups") or [])[:2]:
         await update.message.reply_text(one)
 
-# ------------- Number replies (0–10 typed) -------------
+# ------------- Number replies (0–10 typed for check-ins) -------------
 async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
     text = update.message.text.strip()
@@ -993,6 +1017,16 @@ async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lang = norm_lang(users_get(uid).get("lang") or getattr(user,"language_code",None))
 
+    # если это шаг боли — обработаем как severity и попросим красные флаги
+    s = sessions.get(uid, {})
+    if s.get("topic")=="pain" and s.get("step")==4:
+        s.setdefault("answers",{})["severity"] = val
+        s["step"] = 5
+        await update.message.reply_text(t(lang,"triage_pain_q5"),
+                                        reply_markup=inline_list(T[lang]["triage_pain_q5_opts"], "painrf"))
+        return
+
+    # иначе обычный чек-ин по эпизоду
     ep = episode_find_open(uid)
     if not ep:
         await update.message.reply_text(t(lang,"thanks")); return
