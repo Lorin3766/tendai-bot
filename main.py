@@ -115,7 +115,8 @@ T = {
         "unknown":"Нужно чуть больше деталей: где именно и сколько длится?",
         "profile_intro":"Быстрый опрос (~40с). Можно нажимать кнопки или писать свой ответ.",
         "p_step_1":"Шаг 1/8. Пол:","p_step_2":"Шаг 2/8. Возраст:",
-        "p_step_3":"Шаг 3/8. Главная цель:","p_step_4":"Шаг 4/8. Хронические болезни:",
+        "p_step_3":"Шаг 3/8. Главная цель:","п_step_4":"Шаг 4/8. Хронические болезни:",
+        "p_step_4":"Шаг 4/8. Хронические болезни:",
         "p_step_5":"Шаг 5/8. Лекарства/добавки/аллергии:",
         "p_step_6":"Шаг 6/8. Сон (отбой/подъём, напр. 23:30/07:00):",
         "p_step_7":"Шаг 7/8. Активность:","p_step_8":"Шаг 8/8. Питание чаще всего:",
@@ -827,79 +828,43 @@ def personalized_prefix(lang: str, profile: dict) -> str:
     if not (sex or age or goal): return ""
     return T[lang]["px"].format(sex=sex or "—", age=age or "—", goal=goal or "—")
 
-# ====== >>> PATCH: free-text matching for pain triage ======
+# ====== >>> PATCH: classic free-text matching for pain triage (осталось для фолбэка) ======
 PAIN_LOC_SYNS = {
-    "ru": {
-        "Голова": ["голова","голове","головная","мигрень","висок","темя","лоб"],
-        "Горло": ["горло","в горле","ангина","тонзиллит"],
-        "Спина": ["спина","в спине","поясница","пояснич","лопатк","позвон"],
-        "Живот": ["живот","внизу живота","эпигастр","желудок","киш","подребер"],
-        "Другое": ["другое"]
-    },
-    "uk": {
-        "Голова": ["голова","в голові","мігрень","скроня","лоб"],
-        "Горло": ["горло","в горлі","ангіна","тонзиліт"],
-        "Спина": ["спина","поперек","лопатк","хребет"],
-        "Живіт": ["живіт","внизу живота","шлунок","киш"],
-        "Інше": ["інше"]
-    },
-    "en": {
-        "Head": ["head","headache","migraine","temple","forehead"],
-        "Throat": ["throat","sore throat","tonsil"],
-        "Back": ["back","lower back","spine","shoulder blade"],
-        "Belly": ["belly","stomach","abdomen","tummy","epigastr"],
-        "Other": ["other"]
-    },
+    "ru": {"Голова":["голова","голове","головная","мигрень","висок","темя","лоб"],
+           "Горло":["горло","в горле","ангина","тонзиллит"],
+           "Спина":["спина","в спине","поясница","пояснич","лопатк","позвон"],
+           "Живот":["живот","внизу живота","эпигастр","желудок","киш","подребер"],
+           "Другое":["другое"]},
+    "uk": {"Голова":["голова","в голові","мігрень","скроня","лоб"],
+           "Горло":["горло","в горлі","ангіна","тонзиліт"],
+           "Спина":["спина","поперек","лопатк","хребет"],
+           "Живіт":["живіт","внизу живота","шлунок","киш"],
+           "Інше":["інше"]},
+    "en": {"Head":["head","headache","migraine","temple","forehead"],
+           "Throat":["throat","sore throat","tonsil"],
+           "Back":["back","lower back","spine","shoulder blade"],
+           "Belly":["belly","stomach","abdomen","tummy","epigastr"],
+           "Other":["other"]},
 }
-
 PAIN_KIND_SYNS = {
-    "ru": {
-        "Тупая": ["туп","ноющ","тянущ"],
-        "Острая": ["остр","колющ","режущ"],
-        "Пульсирующая": ["пульс"],
-        "Давящая": ["давит","сдавлив","стягив"]
-    },
-    "uk": {
-        "Тупий": ["туп","ниюч"],
-        "Гострий": ["гостр","колюч","ріжуч"],
-        "Пульсуючий": ["пульс"],
-        "Тиснучий": ["тисн","стискає"]
-    },
-    "en": {
-        "Dull": ["dull","aching","pulling"],
-        "Sharp": ["sharp","stabbing","cutting"],
-        "Pulsating": ["puls","throbb"],
-        "Pressing": ["press","tight","squeez"]
-    },
+    "ru": {"Тупая":["туп","ноющ","тянущ"],"Острая":["остр","колющ","режущ"],"Пульсирующая":["пульс"],"Давящая":["давит","сдавлив","стягив"]},
+    "uk": {"Тупий":["туп","ниюч"],"Гострий":["гостр","колюч","ріжуч"],"Пульсуючий":["пульс"],"Тиснучий":["тисн","стискає"]},
+    "en": {"Dull":["dull","aching","pulling"],"Sharp":["sharp","stabbing","cutting"],"Pulsating":["puls","throbb"],"Pressing":["press","tight","squeez"]},
 }
-
 RED_FLAG_SYNS = {
-    "ru": {
-        "Высокая температура": ["высокая темп","жар","39","40"],
-        "Рвота": ["рвота","тошнит и рв","блюёт","блюет"],
-        "Слабость/онемение": ["онем","слабость в конеч","провисло","асимметрия"],
-        "Нарушение речи/зрения": ["речь","говорить не","зрение","двоит","искры"],
-        "Травма": ["травма","удар","падение","авария"],
-        "Нет": ["нет","ничего","none","нема","відсут"]
-    },
-    "uk": {
-        "Висока температура": ["висока темп","жар","39","40"],
-        "Блювання": ["блюван","рвота"],
-        "Слабкість/оніміння": ["онім","слабк","провисло"],
-        "Проблеми з мовою/зором": ["мова","говорити","зір","двоїть"],
-        "Травма": ["травма","удар","падіння","аварія"],
-        "Немає": ["нема","ні","відсут","none"]
-    },
-    "en": {
-        "High fever": ["high fever","fever","39","102"],
-        "Vomiting": ["vomit","throwing up"],
-        "Weakness/numbness": ["numb","weakness","droop"],
-        "Speech/vision problems": ["speech","vision","double"],
-        "Trauma": ["trauma","injury","fall","accident"],
-        "None": ["none","no"]
-    },
+    "ru": {"Высокая температура":["высокая темп","жар","39","40"],"Рвота":["рвота","тошнит и рв","блюёт","блюет"],
+           "Слабость/онемение":["онем","слабость в конеч","провисло","асимметрия"],
+           "Нарушение речи/зрения":["речь","говорить не","зрение","двоит","искры"],
+           "Травма":["травма","удар","падение","авария"],"Нет":["нет","ничего","none","нема","відсут"]},
+    "uk": {"Висока температура":["висока темп","жар","39","40"],"Блювання":["блюван","рвота"],
+           "Слабкість/оніміння":["онім","слабк","провисло"],
+           "Проблеми з мовою/зором":["мова","говорити","зір","двоїть"],
+           "Травма":["травма","удар","падіння","аварія"],"Немає":["нема","ні","відсут","none"]},
+    "en": {"High fever":["high fever","fever","39","102"],"Vomiting":["vomit","throwing up"],
+           "Weakness/numbness":["numb","weakness","droop"],
+           "Speech/vision problems":["speech","vision","double"],
+           "Trauma":["trauma","injury","fall","accident"],"None":["none","no"]},
 }
-
 def _match_from_syns(text: str, lang: str, syns: dict) -> Optional[str]:
     s = (text or "").lower()
     for label, keys in syns.get(lang, {}).items():
@@ -926,6 +891,95 @@ def _classify_duration(text: str, lang: str) -> Optional[str]:
     if re.search(r"\b(нед|тиж|week)\b", s): return {"ru":">1 недели","uk":">1 тижня","en":">1 week"}[lang]
     return None
 # ====== <<< PATCH end ======
+
+# ====== >>> NEW: LLM решатель шага боли ======
+LLM_PAIN_SYS = (
+    "You orchestrate a 5-step pain triage. Fields in order: "
+    "loc (where), kind (quality), duration, severity (0-10 integer), red (one option). "
+    "Language: {lang}. Given CURRENT_ANSWERS and USER_MESSAGE, extract any fields you can. "
+    "Allowed options:\n"
+    "loc_options={loc_opts}\nkind_options={kind_opts}\n"
+    "duration_options={dur_opts}\nred_options={red_opts}\n"
+    "Rules: Map synonyms to the nearest allowed option. If severity text like '6/10' appears, set an integer 0..10. "
+    "NEXT should be the first missing field after applying updates. If all fields are present, NEXT='plan'. "
+    "Ask must be a single short question in {lang} for the NEXT field. "
+    "Return STRICT MINIFIED JSON only: "
+    "{\"updates\": {\"loc\"?: str, \"kind\"?: str, \"duration\"?: str, \"severity\"?: int, \"red\"?: str}, "
+    "\"next\": \"loc\"|\"kind\"|\"duration\"|\"severity\"|\"red\"|\"plan\", "
+    "\"ask\": string, \"confidence\": 0.0}"
+)
+
+def _normalize_pain_updates(lang: str, updates: dict) -> dict:
+    """Приводим ответы LLM к каноническим вариантам интерфейса."""
+    out = {}
+    if not updates: return out
+    if "loc" in updates and updates["loc"]:
+        out["loc"] = _match_from_syns(str(updates["loc"]), lang, PAIN_LOC_SYNS) or updates["loc"]
+    if "kind" in updates and updates["kind"]:
+        out["kind"] = _match_from_syns(str(updates["kind"]), lang, PAIN_KIND_SYNS) or updates["kind"]
+    if "duration" in updates and updates["duration"]:
+        # принять готовую метку или вытащить из текста
+        val = str(updates["duration"])
+        lab = None
+        for opt in T[lang]["triage_pain_q3_opts"]:
+            if opt.lower() in val.lower():
+                lab = opt; break
+        lab = lab or _classify_duration(val, lang) or val
+        out["duration"] = lab
+    if "severity" in updates:
+        try:
+            n = int(updates["severity"])
+            if 0 <= n <= 10:
+                out["severity"] = n
+        except Exception:
+            pass
+    if "red" in updates and updates["red"]:
+        lab = _match_from_syns(str(updates["red"]), lang, RED_FLAG_SYNS) or updates["red"]
+        out["red"] = lab
+    return out
+
+def _kb_for_next(lang: str, next_key: str):
+    if next_key == "loc":
+        return inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
+    if next_key == "kind":
+        return inline_list(T[lang]["triage_pain_q2_opts"], "painkind")
+    if next_key == "duration":
+        return inline_list(T[lang]["triage_pain_q3_opts"], "paindur")
+    if next_key == "severity":
+        return inline_numbers_0_10()
+    if next_key == "red":
+        return inline_list(T[lang]["triage_pain_q5_opts"], "painrf")
+    return None
+
+def llm_decide_next_pain_step(user_text: str, lang: str, answers: dict) -> Optional[dict]:
+    """Возвращает dict с полями: updates, next, ask, confidence. Или None при ошибке/отключенном LLM."""
+    if not oai:
+        return None
+    try:
+        sys = LLM_PAIN_SYS.format(
+            lang=lang,
+            loc_opts=T[lang]["triage_pain_q1_opts"],
+            kind_opts=T[lang]["triage_pain_q2_opts"],
+            dur_opts=T[lang]["triage_pain_q3_opts"],
+            red_opts=T[lang]["triage_pain_q5_opts"],
+        )
+        state = json.dumps({"current_answers": answers or {}}, ensure_ascii=False)
+        resp = oai.chat.completions.create(
+            model=OPENAI_MODEL, temperature=0.2, max_tokens=220,
+            messages=[
+                {"role":"system","content":sys},
+                {"role":"user","content":f"CURRENT_ANSWERS={state}\nUSER_MESSAGE={user_text.strip()}"},
+            ],
+        )
+        out = resp.choices[0].message.content.strip()
+        m = re.search(r"\{.*\}\s*$", out, re.S)
+        data = json.loads(m.group(0) if m else out)
+        data["updates"] = _normalize_pain_updates(lang, data.get("updates", {}))
+        return data
+    except Exception as e:
+        logging.error(f"llm_decide_next_pain_step error: {e}")
+        return None
+# ====== <<< NEW end ======
 
 # ------------- Commands & init -------------
 async def post_init(app):
@@ -1237,10 +1291,48 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not sessions.get(uid,{}).get("profile_active") and profile_is_incomplete(prof):
         await start_profile_ctx(context, update.effective_chat.id, lang, uid); return
 
-    # ====== >>> PATCH: free-text handling inside active pain triage ======
+    # ===== NEW: LLM решает следующий шаг в активном триаже боли =====
     s = sessions.get(uid, {})
     if s.get("topic") == "pain":
-        # ШАГ 1: локализация
+        # 1) Попытка LLM-решателя
+        dec = llm_decide_next_pain_step(text, lang, s.get("answers", {}))
+        if dec:
+            updates = dec.get("updates", {})
+            if updates:
+                ans = s.setdefault("answers", {})
+                ans.update(updates)
+            next_key = dec.get("next")
+            # авто-определение шага из next
+            step_map = {"loc":1, "kind":2, "duration":3, "severity":4, "red":5, "plan":6}
+            if next_key in step_map:
+                s["step"] = step_map[next_key]
+            if next_key == "plan" and {"loc","kind","duration","severity","red"}.issubset(set(s.get("answers",{}).keys())):
+                red = s["answers"]["red"]
+                sev = int(s["answers"]["severity"])
+                eid = episode_create(uid, "pain", sev, red); s["episode_id"] = eid
+                plan_lines = pain_plan(lang, [red], profiles_get(uid))
+                prefix = personalized_prefix(lang, profiles_get(uid))
+                text_plan = (prefix + "\n" if prefix else "") + f"{T[lang]['plan_header']}\n" + "\n".join(plan_lines)
+                await update.message.reply_text(text_plan)
+                await update.message.reply_text(T[lang]["plan_accept"], reply_markup=inline_accept(lang))
+                s["step"] = 6
+                return
+            # иначе — задаём следующий вопрос
+            ask = dec.get("ask") or {
+                "loc": T[lang]["triage_pain_q1"],
+                "kind": T[lang]["triage_pain_q2"],
+                "duration": T[lang]["triage_pain_q3"],
+                "severity": T[lang]["triage_pain_q4"],
+                "red": T[lang]["triage_pain_q5"],
+            }.get(next_key, T[lang]["triage_pain_q1"])
+            kb = _kb_for_next(lang, next_key or "loc")
+            await send_unique(update.message, uid, ask, reply_markup=kb)
+            return
+        # 2) Фолбэк на твои правила (ниже) если LLM недоступен/неуверен
+
+    # ====== >>> PATCH: free-text handling inside active pain triage (fallback) ======
+    s = sessions.get(uid, {})
+    if s.get("topic") == "pain":
         if s.get("step") == 1:
             label = _match_from_syns(text, lang, PAIN_LOC_SYNS)
             if label:
@@ -1252,8 +1344,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_unique(update.message, uid, T[lang]["triage_pain_q1"],
                               reply_markup=inline_list(T[lang]["triage_pain_q1_opts"], "painloc"))
             return
-
-        # ШАГ 2: характер боли
         if s.get("step") == 2:
             label = _match_from_syns(text, lang, PAIN_KIND_SYNS)
             if label:
@@ -1262,12 +1352,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await send_unique(update.message, uid, T[lang]["triage_pain_q3"],
                                   reply_markup=inline_list(T[lang]["triage_pain_q3_opts"], "paindur"))
                 return
-        # если не распознали — повторим вопрос один раз
             await send_unique(update.message, uid, T[lang]["triage_pain_q2"],
                               reply_markup=inline_list(T[lang]["triage_pain_q2_opts"], "painkind"))
             return
-
-        # ШАГ 3: длительность
         if s.get("step") == 3:
             label = _classify_duration(text, lang)
             if label:
@@ -1278,11 +1365,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_unique(update.message, uid, T[lang]["triage_pain_q3"],
                               reply_markup=inline_list(T[lang]["triage_pain_q3_opts"], "paindur"))
             return
-
-        # ШАГ 4 уже реализован ниже отдельным хэндлером чисел (on_number_reply)
-
-        # ШАГ 5: красные флаги — текстом
-        if s.get("step") == 5:
+        if s.get("step")==5:
             rf_label = _match_from_syns(text, lang, RED_FLAG_SYNS) or \
                        ("Нет" if lang=="ru" and re.search(r"\bнет\b", text.lower()) else
                         "Немає" if lang=="uk" and re.search(r"\bнема\b", text.lower()) else
