@@ -31,6 +31,7 @@ DetectorFactory.seed = 0
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# По желанию поставь gpt-4o
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 SHEET_NAME = os.getenv("SHEET_NAME", "TendAI Sheets")
@@ -557,6 +558,85 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
         logging.error(f"router LLM error: {e}")
         return {"intent":"other","assistant_reply":T[lang]["unknown"],"followups":[],"needs_more":True,"red_flags":False,"confidence":0.3}
 
+# ===== LLM ORCHESTRATOR FOR PAIN TRIAGE (добавлено) =====
+def _kb_for_code(lang: str, code: str):
+    if code == "painloc":
+        return inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
+    if code == "painkind":
+        return inline_list(T[lang]["triage_pain_q2_opts"], "painkind")
+    if code == "paindur":
+        return inline_list(T[lang]["triage_pain_q3_opts"], "paindur")
+    if code == "num":
+        return inline_numbers_0_10()
+    if code == "painrf":
+        return inline_list(T[lang]["triage_pain_q5_opts"], "painrf")
+    return None
+
+def llm_decide_next_pain_step(user_text: str, lang: str, state: dict) -> Optional[dict]:
+    """
+    Возвращает dict:
+      {
+        "updates": {"loc": "...", "kind": "...", "duration": "...", "severity": 6, "red": "Нет/None/..."},
+        "ask": "<короткий вопрос на след. слот или пусто>",
+        "kb": "painloc|painkind|paindur|num|painrf|done"
+      }
+    Или None, если LLM недоступен/ошибка.
+    """
+    if not oai:
+        return None
+
+    known = state.get("answers", {})
+    opts = {
+        "loc": T[lang]["triage_pain_q1_opts"],
+        "kind": T[lang]["triage_pain_q2_opts"],
+        "duration": T[lang]["triage_pain_q3_opts"],
+        "red": T[lang]["triage_pain_q5_opts"],
+    }
+    sys = (
+        "You are a clinical triage step planner. "
+        f"Language: {lang}. Reply in the user's language. "
+        "You get partial fields for a PAIN complaint and a new user message. "
+        "Extract any fields present from the message. Keep labels EXACTLY as in the allowed options. "
+        "Field keys: loc(kind of location), kind(pain quality), duration(one of provided), severity(integer 0-10), red(one of provided). "
+        "Then decide the NEXT missing field to ask (order: loc -> kind -> duration -> severity -> red). "
+        "Return STRICT JSON ONLY with keys updates, ask, kb. "
+        "kb must be one of: painloc, painkind, paindur, num, painrf, done. "
+        "If enough info to produce a plan (we have severity and red), set kb='done' and ask=''."
+        "\n\nAllowed options:\n"
+        f"loc: {opts['loc']}\n"
+        f"kind: {opts['kind']}\n"
+        f"duration: {opts['duration']}\n"
+        f"red: {opts['red']}\n"
+    )
+    user = {
+        "known": known,
+        "message": user_text
+    }
+    try:
+        resp = oai.chat.completions.create(
+            model=OPENAI_MODEL, temperature=0.1, max_tokens=220,
+            messages=[
+                {"role":"system","content":sys},
+                {"role":"user","content":json.dumps(user, ensure_ascii=False)}
+            ]
+        )
+        out = resp.choices[0].message.content.strip()
+        m = re.search(r"\{.*\}\s*$", out, re.S)
+        data = json.loads(m.group(0) if m else out)
+        # sanity: clamp severity
+        if "updates" in data and isinstance(data["updates"], dict):
+            if "severity" in data["updates"]:
+                try:
+                    sv = int(data["updates"]["severity"])
+                    data["updates"]["severity"] = max(0, min(10, sv))
+                except:
+                    data["updates"].pop("severity", None)
+        return data
+    except Exception as e:
+        logging.error(f"llm_decide_next_pain_step error: {e}")
+        return None
+# ===== END LLM ORCHESTRATOR =====
+
 # --------- Inline keyboards ---------
 def inline_topic_kb(lang:str) -> InlineKeyboardMarkup:
     items = [
@@ -828,43 +908,79 @@ def personalized_prefix(lang: str, profile: dict) -> str:
     if not (sex or age or goal): return ""
     return T[lang]["px"].format(sex=sex or "—", age=age or "—", goal=goal or "—")
 
-# ====== >>> PATCH: classic free-text matching for pain triage (осталось для фолбэка) ======
+# ====== >>> PATCH: free-text matching for pain triage (fallback без LLM) ======
 PAIN_LOC_SYNS = {
-    "ru": {"Голова":["голова","голове","головная","мигрень","висок","темя","лоб"],
-           "Горло":["горло","в горле","ангина","тонзиллит"],
-           "Спина":["спина","в спине","поясница","пояснич","лопатк","позвон"],
-           "Живот":["живот","внизу живота","эпигастр","желудок","киш","подребер"],
-           "Другое":["другое"]},
-    "uk": {"Голова":["голова","в голові","мігрень","скроня","лоб"],
-           "Горло":["горло","в горлі","ангіна","тонзиліт"],
-           "Спина":["спина","поперек","лопатк","хребет"],
-           "Живіт":["живіт","внизу живота","шлунок","киш"],
-           "Інше":["інше"]},
-    "en": {"Head":["head","headache","migraine","temple","forehead"],
-           "Throat":["throat","sore throat","tonsil"],
-           "Back":["back","lower back","spine","shoulder blade"],
-           "Belly":["belly","stomach","abdomen","tummy","epigastr"],
-           "Other":["other"]},
+    "ru": {
+        "Голова": ["голова","голове","головная","мигрень","висок","темя","лоб"],
+        "Горло": ["горло","в горле","ангина","тонзиллит"],
+        "Спина": ["спина","в спине","поясница","пояснич","лопатк","позвон","сзади"],
+        "Живот": ["живот","внизу живота","эпигастр","желудок","киш","подребер"],
+        "Другое": ["другое"]
+    },
+    "uk": {
+        "Голова": ["голова","в голові","мігрень","скроня","лоб"],
+        "Горло": ["горло","в горлі","ангіна","тонзиліт"],
+        "Спина": ["спина","поперек","лопатк","хребет"],
+        "Живіт": ["живіт","внизу живота","шлунок","киш"],
+        "Інше": ["інше"]
+    },
+    "en": {
+        "Head": ["head","headache","migraine","temple","forehead"],
+        "Throat": ["throat","sore throat","tonsil"],
+        "Back": ["back","lower back","spine","shoulder blade"],
+        "Belly": ["belly","stomach","abdomen","tummy","epigastr"],
+        "Other": ["other"]
+    },
 }
+
 PAIN_KIND_SYNS = {
-    "ru": {"Тупая":["туп","ноющ","тянущ"],"Острая":["остр","колющ","режущ"],"Пульсирующая":["пульс"],"Давящая":["давит","сдавлив","стягив"]},
-    "uk": {"Тупий":["туп","ниюч"],"Гострий":["гостр","колюч","ріжуч"],"Пульсуючий":["пульс"],"Тиснучий":["тисн","стискає"]},
-    "en": {"Dull":["dull","aching","pulling"],"Sharp":["sharp","stabbing","cutting"],"Pulsating":["puls","throbb"],"Pressing":["press","tight","squeez"]},
+    "ru": {
+        "Тупая": ["туп","ноющ","тянущ"],
+        "Острая": ["остр","колющ","режущ"],
+        "Пульсирующая": ["пульс"],
+        "Давящая": ["давит","сдавлив","стягив"]
+    },
+    "uk": {
+        "Тупий": ["туп","ниюч"],
+        "Гострий": ["гостр","колюч","ріжуч"],
+        "Пульсуючий": ["пульс"],
+        "Тиснучий": ["тисн","стискає"]
+    },
+    "en": {
+        "Dull": ["dull","aching","pulling"],
+        "Sharp": ["sharp","stabbing","cutting"],
+        "Pulsating": ["puls","throbb"],
+        "Pressing": ["press","tight","squeez"]
+    },
 }
+
 RED_FLAG_SYNS = {
-    "ru": {"Высокая температура":["высокая темп","жар","39","40"],"Рвота":["рвота","тошнит и рв","блюёт","блюет"],
-           "Слабость/онемение":["онем","слабость в конеч","провисло","асимметрия"],
-           "Нарушение речи/зрения":["речь","говорить не","зрение","двоит","искры"],
-           "Травма":["травма","удар","падение","авария"],"Нет":["нет","ничего","none","нема","відсут"]},
-    "uk": {"Висока температура":["висока темп","жар","39","40"],"Блювання":["блюван","рвота"],
-           "Слабкість/оніміння":["онім","слабк","провисло"],
-           "Проблеми з мовою/зором":["мова","говорити","зір","двоїть"],
-           "Травма":["травма","удар","падіння","аварія"],"Немає":["нема","ні","відсут","none"]},
-    "en": {"High fever":["high fever","fever","39","102"],"Vomiting":["vomit","throwing up"],
-           "Weakness/numbness":["numb","weakness","droop"],
-           "Speech/vision problems":["speech","vision","double"],
-           "Trauma":["trauma","injury","fall","accident"],"None":["none","no"]},
+    "ru": {
+        "Высокая температура": ["высокая темп","жар","39","40"],
+        "Рвота": ["рвота","тошнит и рв","блюёт","блюет"],
+        "Слабость/онемение": ["онем","слабость в конеч","провисло","асимметрия"],
+        "Нарушение речи/зрения": ["речь","говорить не","зрение","двоит","искры"],
+        "Травма": ["травма","удар","падение","авария"],
+        "Нет": ["нет","ничего","none","нема","відсут"]
+    },
+    "uk": {
+        "Висока температура": ["висока темп","жар","39","40"],
+        "Блювання": ["блюван","рвота"],
+        "Слабкість/оніміння": ["онім","слабк","провисло"],
+        "Проблеми з мовою/зором": ["мова","говорити","зір","двоїть"],
+        "Травма": ["травма","удар","падіння","аварія"],
+        "Немає": ["нема","ні","відсут","none"]
+    },
+    "en": {
+        "High fever": ["high fever","fever","39","102"],
+        "Vomiting": ["vomit","throwing up"],
+        "Weakness/numbness": ["numb","weakness","droop"],
+        "Speech/vision problems": ["speech","vision","double"],
+        "Trauma": ["trauma","injury","fall","accident"],
+        "None": ["none","no"]
+    },
 }
+
 def _match_from_syns(text: str, lang: str, syns: dict) -> Optional[str]:
     s = (text or "").lower()
     for label, keys in syns.get(lang, {}).items():
@@ -891,95 +1007,6 @@ def _classify_duration(text: str, lang: str) -> Optional[str]:
     if re.search(r"\b(нед|тиж|week)\b", s): return {"ru":">1 недели","uk":">1 тижня","en":">1 week"}[lang]
     return None
 # ====== <<< PATCH end ======
-
-# ====== >>> NEW: LLM решатель шага боли ======
-LLM_PAIN_SYS = (
-    "You orchestrate a 5-step pain triage. Fields in order: "
-    "loc (where), kind (quality), duration, severity (0-10 integer), red (one option). "
-    "Language: {lang}. Given CURRENT_ANSWERS and USER_MESSAGE, extract any fields you can. "
-    "Allowed options:\n"
-    "loc_options={loc_opts}\nkind_options={kind_opts}\n"
-    "duration_options={dur_opts}\nred_options={red_opts}\n"
-    "Rules: Map synonyms to the nearest allowed option. If severity text like '6/10' appears, set an integer 0..10. "
-    "NEXT should be the first missing field after applying updates. If all fields are present, NEXT='plan'. "
-    "Ask must be a single short question in {lang} for the NEXT field. "
-    "Return STRICT MINIFIED JSON only: "
-    "{\"updates\": {\"loc\"?: str, \"kind\"?: str, \"duration\"?: str, \"severity\"?: int, \"red\"?: str}, "
-    "\"next\": \"loc\"|\"kind\"|\"duration\"|\"severity\"|\"red\"|\"plan\", "
-    "\"ask\": string, \"confidence\": 0.0}"
-)
-
-def _normalize_pain_updates(lang: str, updates: dict) -> dict:
-    """Приводим ответы LLM к каноническим вариантам интерфейса."""
-    out = {}
-    if not updates: return out
-    if "loc" in updates and updates["loc"]:
-        out["loc"] = _match_from_syns(str(updates["loc"]), lang, PAIN_LOC_SYNS) or updates["loc"]
-    if "kind" in updates and updates["kind"]:
-        out["kind"] = _match_from_syns(str(updates["kind"]), lang, PAIN_KIND_SYNS) or updates["kind"]
-    if "duration" in updates and updates["duration"]:
-        # принять готовую метку или вытащить из текста
-        val = str(updates["duration"])
-        lab = None
-        for opt in T[lang]["triage_pain_q3_opts"]:
-            if opt.lower() in val.lower():
-                lab = opt; break
-        lab = lab or _classify_duration(val, lang) or val
-        out["duration"] = lab
-    if "severity" in updates:
-        try:
-            n = int(updates["severity"])
-            if 0 <= n <= 10:
-                out["severity"] = n
-        except Exception:
-            pass
-    if "red" in updates and updates["red"]:
-        lab = _match_from_syns(str(updates["red"]), lang, RED_FLAG_SYNS) or updates["red"]
-        out["red"] = lab
-    return out
-
-def _kb_for_next(lang: str, next_key: str):
-    if next_key == "loc":
-        return inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
-    if next_key == "kind":
-        return inline_list(T[lang]["triage_pain_q2_opts"], "painkind")
-    if next_key == "duration":
-        return inline_list(T[lang]["triage_pain_q3_opts"], "paindur")
-    if next_key == "severity":
-        return inline_numbers_0_10()
-    if next_key == "red":
-        return inline_list(T[lang]["triage_pain_q5_opts"], "painrf")
-    return None
-
-def llm_decide_next_pain_step(user_text: str, lang: str, answers: dict) -> Optional[dict]:
-    """Возвращает dict с полями: updates, next, ask, confidence. Или None при ошибке/отключенном LLM."""
-    if not oai:
-        return None
-    try:
-        sys = LLM_PAIN_SYS.format(
-            lang=lang,
-            loc_opts=T[lang]["triage_pain_q1_opts"],
-            kind_opts=T[lang]["triage_pain_q2_opts"],
-            dur_opts=T[lang]["triage_pain_q3_opts"],
-            red_opts=T[lang]["triage_pain_q5_opts"],
-        )
-        state = json.dumps({"current_answers": answers or {}}, ensure_ascii=False)
-        resp = oai.chat.completions.create(
-            model=OPENAI_MODEL, temperature=0.2, max_tokens=220,
-            messages=[
-                {"role":"system","content":sys},
-                {"role":"user","content":f"CURRENT_ANSWERS={state}\nUSER_MESSAGE={user_text.strip()}"},
-            ],
-        )
-        out = resp.choices[0].message.content.strip()
-        m = re.search(r"\{.*\}\s*$", out, re.S)
-        data = json.loads(m.group(0) if m else out)
-        data["updates"] = _normalize_pain_updates(lang, data.get("updates", {}))
-        return data
-    except Exception as e:
-        logging.error(f"llm_decide_next_pain_step error: {e}")
-        return None
-# ====== <<< NEW end ======
 
 # ------------- Commands & init -------------
 async def post_init(app):
@@ -1121,7 +1148,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if topic=="profile":
             await start_profile_ctx(context, chat_id, lang, uid); return
         if topic=="pain":
-            await start_pain_triage_ctx(context, chat_id, lang, uid); return
+            sessions[uid] = {"topic":"pain","step":1,"answers":{}}
+            kb = inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
+            await q.message.reply_text(T[lang]["triage_pain_q1"], reply_markup=kb); return
         # остальные темы — через LLM + персонализация + умные действия
         prof = profiles_get(uid)
         data_llm = llm_router_answer(q.message.text or "", lang, prof)
@@ -1291,24 +1320,20 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not sessions.get(uid,{}).get("profile_active") and profile_is_incomplete(prof):
         await start_profile_ctx(context, update.effective_chat.id, lang, uid); return
 
-    # ===== NEW: LLM решает следующий шаг в активном триаже боли =====
+    # ===== LLM-ОРКЕСТРАТОР внутри pain-триажа =====
     s = sessions.get(uid, {})
     if s.get("topic") == "pain":
-        # 1) Попытка LLM-решателя
-        dec = llm_decide_next_pain_step(text, lang, s.get("answers", {}))
-        if dec:
-            updates = dec.get("updates", {})
-            if updates:
-                ans = s.setdefault("answers", {})
-                ans.update(updates)
-            next_key = dec.get("next")
-            # авто-определение шага из next
-            step_map = {"loc":1, "kind":2, "duration":3, "severity":4, "red":5, "plan":6}
-            if next_key in step_map:
-                s["step"] = step_map[next_key]
-            if next_key == "plan" and {"loc","kind","duration","severity","red"}.issubset(set(s.get("answers",{}).keys())):
-                red = s["answers"]["red"]
-                sev = int(s["answers"]["severity"])
+        # 1) пробуем LLM-решатель шага
+        data = llm_decide_next_pain_step(text, lang, s)
+        if data and isinstance(data, dict):
+            s.setdefault("answers", {}).update({k:v for k,v in (data.get("updates") or {}).items() if v not in (None,"")})
+            # вычисляем текущий step на основе заполненности
+            filled = s["answers"]
+            # loc -> kind -> duration -> severity -> red
+            if "red" in filled and "severity" in filled:
+                # план готов
+                sev = int(filled.get("severity", 5))
+                red = str(filled.get("red") or "None")
                 eid = episode_create(uid, "pain", sev, red); s["episode_id"] = eid
                 plan_lines = pain_plan(lang, [red], profiles_get(uid))
                 prefix = personalized_prefix(lang, profiles_get(uid))
@@ -1317,22 +1342,23 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(T[lang]["plan_accept"], reply_markup=inline_accept(lang))
                 s["step"] = 6
                 return
-            # иначе — задаём следующий вопрос
-            ask = dec.get("ask") or {
-                "loc": T[lang]["triage_pain_q1"],
-                "kind": T[lang]["triage_pain_q2"],
-                "duration": T[lang]["triage_pain_q3"],
-                "severity": T[lang]["triage_pain_q4"],
-                "red": T[lang]["triage_pain_q5"],
-            }.get(next_key, T[lang]["triage_pain_q1"])
-            kb = _kb_for_next(lang, next_key or "loc")
-            await send_unique(update.message, uid, ask, reply_markup=kb)
-            return
-        # 2) Фолбэк на твои правила (ниже) если LLM недоступен/неуверен
+            # иначе задаём вопрос, который предложил LLM
+            ask = data.get("ask") or ""
+            kb_code = data.get("kb")
+            if kb_code and kb_code != "done":
+                s["step"] = {"painloc":1,"painkind":2,"paindur":3,"num":4,"painrf":5}.get(kb_code, s.get("step",1))
+                await send_unique(update.message, uid, ask or
+                                  {"painloc":T[lang]["triage_pain_q1"],"painkind":T[lang]["triage_pain_q2"],
+                                   "paindur":T[lang]["triage_pain_q3"],"num":T[lang]["triage_pain_q4"],
+                                   "painrf":T[lang]["triage_pain_q5"]}[kb_code],
+                                  reply_markup=_kb_for_code(lang, kb_code))
+                return
+        # 2) если LLM недоступен/не понял — fallback-синонимы ниже
 
-    # ====== >>> PATCH: free-text handling inside active pain triage (fallback) ======
+    # ====== Fallback: free-text handling inside active pain triage ======
     s = sessions.get(uid, {})
     if s.get("topic") == "pain":
+        # ШАГ 1: локализация
         if s.get("step") == 1:
             label = _match_from_syns(text, lang, PAIN_LOC_SYNS)
             if label:
@@ -1344,6 +1370,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_unique(update.message, uid, T[lang]["triage_pain_q1"],
                               reply_markup=inline_list(T[lang]["triage_pain_q1_opts"], "painloc"))
             return
+
+        # ШАГ 2: характер боли
         if s.get("step") == 2:
             label = _match_from_syns(text, lang, PAIN_KIND_SYNS)
             if label:
@@ -1355,6 +1383,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_unique(update.message, uid, T[lang]["triage_pain_q2"],
                               reply_markup=inline_list(T[lang]["triage_pain_q2_opts"], "painkind"))
             return
+
+        # ШАГ 3: длительность
         if s.get("step") == 3:
             label = _classify_duration(text, lang)
             if label:
@@ -1365,7 +1395,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_unique(update.message, uid, T[lang]["triage_pain_q3"],
                               reply_markup=inline_list(T[lang]["triage_pain_q3_opts"], "paindur"))
             return
-        if s.get("step")==5:
+
+        # ШАГ 4 покрыт хэндлером чисел (on_number_reply)
+
+        # ШАГ 5: красные флаги — текстом
+        if s.get("step") == 5:
             rf_label = _match_from_syns(text, lang, RED_FLAG_SYNS) or \
                        ("Нет" if lang=="ru" and re.search(r"\bнет\b", text.lower()) else
                         "Немає" if lang=="uk" and re.search(r"\bнема\b", text.lower()) else
@@ -1385,7 +1419,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_unique(update.message, uid, T[lang]["triage_pain_q5"],
                               reply_markup=inline_list(T[lang]["triage_pain_q5_opts"], "painrf"))
             return
-    # ====== <<< PATCH end ======
 
     # активный pain-триаж: число вручную на шаге 4
     s = sessions.get(uid, {})
