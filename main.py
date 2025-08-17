@@ -359,11 +359,16 @@ def users_get(uid: int) -> dict:
     return MEM_USERS.get(uid, {})
 
 def users_upsert(uid: int, username: str, lang: str):
-    base = {"user_id": str(uid), "username": username or "", "lang": lang, "consent": "no",
-            "tz_offset","checkin_hour","paused"}
-    base["tz_offset"] = "0"
-    base["checkin_hour"] = DEFAULT_CHECKIN_LOCAL
-    base["paused"] = "no"
+    # FIX: валидный словарь без синтаксической ошибки
+    base = {
+        "user_id": str(uid),
+        "username": username or "",
+        "lang": lang,
+        "consent": "no",
+        "tz_offset": "0",
+        "checkin_hour": DEFAULT_CHECKIN_LOCAL,
+        "paused": "no",
+    }
 
     if SHEETS_ENABLED:
         vals = ws_users.get_all_records()
