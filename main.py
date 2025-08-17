@@ -31,8 +31,8 @@ DetectorFactory.seed = 0
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-# По желанию поставь gpt-4o
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# по умолчанию используем gpt-4o (можно переопределить в .env)
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 
 SHEET_NAME = os.getenv("SHEET_NAME", "TendAI Sheets")
 SHEET_ID = os.getenv("SHEET_ID", "")
@@ -43,6 +43,7 @@ oai: Optional[OpenAI] = None
 if OPENAI_API_KEY:
     try:
         oai = OpenAI(api_key=OPENAI_API_KEY)
+        logging.info("OpenAI client initialized")
     except Exception as e:
         logging.error(f"OpenAI init error: {e}")
 
@@ -116,8 +117,7 @@ T = {
         "unknown":"Нужно чуть больше деталей: где именно и сколько длится?",
         "profile_intro":"Быстрый опрос (~40с). Можно нажимать кнопки или писать свой ответ.",
         "p_step_1":"Шаг 1/8. Пол:","p_step_2":"Шаг 2/8. Возраст:",
-        "p_step_3":"Шаг 3/8. Главная цель:","п_step_4":"Шаг 4/8. Хронические болезни:",
-        "p_step_4":"Шаг 4/8. Хронические болезни:",
+        "p_step_3":"Шаг 3/8. Главная цель:","p_step_4":"Шаг 4/8. Хронические болезни:",
         "p_step_5":"Шаг 5/8. Лекарства/добавки/аллергии:",
         "p_step_6":"Шаг 6/8. Сон (отбой/подъём, напр. 23:30/07:00):",
         "p_step_7":"Шаг 7/8. Активность:","p_step_8":"Шаг 8/8. Питание чаще всего:",
@@ -542,11 +542,11 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
     try:
         resp = oai.chat.completions.create(
             model=OPENAI_MODEL, temperature=0.25, max_tokens=420,
+            response_format={"type":"json_object"},
             messages=[{"role":"system","content":sys},{"role":"user","content":text}]
         )
         out = resp.choices[0].message.content.strip()
-        m = re.search(r"\{.*\}\s*$", out, re.S)
-        data = json.loads(m.group(0) if m else out)
+        data = json.loads(out)
         if data.get("red_flags") and float(data.get("confidence",0)) < 0.6:
             data["red_flags"] = False; data["needs_more"] = True
             data.setdefault("followups", []).append(
@@ -558,7 +558,7 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
         logging.error(f"router LLM error: {e}")
         return {"intent":"other","assistant_reply":T[lang]["unknown"],"followups":[],"needs_more":True,"red_flags":False,"confidence":0.3}
 
-# ===== LLM ORCHESTRATOR FOR PAIN TRIAGE (добавлено) =====
+# ===== LLM ORCHESTRATOR FOR PAIN TRIAGE =====
 def _kb_for_code(lang: str, code: str):
     if code == "painloc":
         return inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
@@ -615,14 +615,14 @@ def llm_decide_next_pain_step(user_text: str, lang: str, state: dict) -> Optiona
     try:
         resp = oai.chat.completions.create(
             model=OPENAI_MODEL, temperature=0.1, max_tokens=220,
+            response_format={"type":"json_object"},
             messages=[
                 {"role":"system","content":sys},
                 {"role":"user","content":json.dumps(user, ensure_ascii=False)}
             ]
         )
         out = resp.choices[0].message.content.strip()
-        m = re.search(r"\{.*\}\s*$", out, re.S)
-        data = json.loads(m.group(0) if m else out)
+        data = json.loads(out)
         # sanity: clamp severity
         if "updates" in data and isinstance(data["updates"], dict):
             if "severity" in data["updates"]:
@@ -633,7 +633,7 @@ def llm_decide_next_pain_step(user_text: str, lang: str, state: dict) -> Optiona
                     data["updates"].pop("severity", None)
         return data
     except Exception as e:
-        logging.error(f"llm_decide_next_pain_step error: {e}")
+        logging.error(f"llm_decide_next_pain_step error: {e}; text='{user_text[:120]}'")
         return None
 # ===== END LLM ORCHESTRATOR =====
 
@@ -878,7 +878,8 @@ def build_profile_kb(lang:str, key:str, opts:List[Tuple[str,str]])->InlineKeyboa
     return InlineKeyboardMarkup(rows)
 
 async def start_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
-    sessions[uid] = {"profile_active": True, "p_step": 0, "p_wait_key": None}
+    s = sessions.setdefault(uid, {})
+    s.update({"profile_active": True, "p_step": 0, "p_wait_key": None})
     await context.bot.send_message(chat_id, T[lang]["profile_intro"], reply_markup=ReplyKeyboardRemove())
     step = PROFILE_STEPS[0]
     kb = build_profile_kb(lang, step["key"], step["opts"][lang])
@@ -908,7 +909,7 @@ def personalized_prefix(lang: str, profile: dict) -> str:
     if not (sex or age or goal): return ""
     return T[lang]["px"].format(sex=sex or "—", age=age or "—", goal=goal or "—")
 
-# ====== >>> PATCH: free-text matching for pain triage (fallback без LLM) ======
+# ====== >>> Fallback synonyms for pain triage ======
 PAIN_LOC_SYNS = {
     "ru": {
         "Голова": ["голова","голове","головная","мигрень","висок","темя","лоб"],
@@ -1145,15 +1146,28 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("topic|"):
         topic = data.split("|",1)[1]
+        s = sessions.setdefault(uid, {})
         if topic=="profile":
             await start_profile_ctx(context, chat_id, lang, uid); return
         if topic=="pain":
-            sessions[uid] = {"topic":"pain","step":1,"answers":{}}
+            s.update({"topic":"pain","step":1})
+            s.setdefault("answers", {})
             kb = inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
             await q.message.reply_text(T[lang]["triage_pain_q1"], reply_markup=kb); return
-        # остальные темы — через LLM + персонализация + умные действия
+
+        # Остальные темы — свободный диалог через LLM на основе последней фразы пользователя.
+        s["topic"] = topic
+        u_text = s.get("last_user_text","").strip()
+        if not u_text:
+            await q.message.reply_text(
+                {"ru":"Опиши в 1–2 фразах, что беспокоит.",
+                 "uk":"Опиши в 1–2 фразах, що турбує.",
+                 "en":"Describe in 1–2 lines what’s bothering you."}[lang]
+            )
+            return
+
         prof = profiles_get(uid)
-        data_llm = llm_router_answer(q.message.text or "", lang, prof)
+        data_llm = llm_router_answer(u_text, lang, prof)
         prefix = personalized_prefix(lang, prof)
         reply = ((prefix + "\n") if prefix else "") + (data_llm.get("assistant_reply") or T[lang]["unknown"])
         await q.message.reply_text(reply, reply_markup=inline_actions(lang))
@@ -1252,7 +1266,9 @@ def detect_or_choose_topic(lang: str, text: str) -> Optional[str]:
     return None
 
 async def start_pain_triage_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
-    sessions[uid] = {"topic":"pain","step":1,"answers":{}}
+    s = sessions.setdefault(uid, {})
+    s.update({"topic":"pain","step":1})
+    s.setdefault("answers", {})
     kb = inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
     await context.bot.send_message(chat_id, T[lang]["triage_pain_q1"], reply_markup=kb)
 
@@ -1261,6 +1277,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; uid = user.id
     text = (update.message.text or "").strip()
     logging.info(f"INCOMING uid={uid} text={text[:200]}")
+
+    # сохраняем последнюю фразу пользователя для LLM при кликах по темам
+    sessions.setdefault(uid, {}).update({"last_user_text": text})
 
     # первичное сохранение пользователя + приветствие + intake
     urec = users_get(uid)
@@ -1315,9 +1334,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         profiles_upsert(uid,{key:val}); sessions[uid][key]=val
         await advance_profile_ctx(context, update.effective_chat.id, lang, uid); return
 
-    # если профиль пуст — запускаем intake
+    # если профиль пуст — запускаем intake ТОЛЬКО если нет активной темы и intake не активен
     prof = profiles_get(uid)
-    if not sessions.get(uid,{}).get("profile_active") and profile_is_incomplete(prof):
+    s = sessions.get(uid, {})
+    if profile_is_incomplete(prof) and not s.get("topic") and not s.get("profile_active"):
         await start_profile_ctx(context, update.effective_chat.id, lang, uid); return
 
     # ===== LLM-ОРКЕСТРАТОР внутри pain-триажа =====
@@ -1327,11 +1347,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = llm_decide_next_pain_step(text, lang, s)
         if data and isinstance(data, dict):
             s.setdefault("answers", {}).update({k:v for k,v in (data.get("updates") or {}).items() if v not in (None,"")})
-            # вычисляем текущий step на основе заполненности
             filled = s["answers"]
-            # loc -> kind -> duration -> severity -> red
             if "red" in filled and "severity" in filled:
-                # план готов
                 sev = int(filled.get("severity", 5))
                 red = str(filled.get("red") or "None")
                 eid = episode_create(uid, "pain", sev, red); s["episode_id"] = eid
@@ -1358,7 +1375,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ====== Fallback: free-text handling inside active pain triage ======
     s = sessions.get(uid, {})
     if s.get("topic") == "pain":
-        # ШАГ 1: локализация
         if s.get("step") == 1:
             label = _match_from_syns(text, lang, PAIN_LOC_SYNS)
             if label:
@@ -1371,7 +1387,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               reply_markup=inline_list(T[lang]["triage_pain_q1_opts"], "painloc"))
             return
 
-        # ШАГ 2: характер боли
         if s.get("step") == 2:
             label = _match_from_syns(text, lang, PAIN_KIND_SYNS)
             if label:
@@ -1384,7 +1399,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               reply_markup=inline_list(T[lang]["triage_pain_q2_opts"], "painkind"))
             return
 
-        # ШАГ 3: длительность
         if s.get("step") == 3:
             label = _classify_duration(text, lang)
             if label:
@@ -1394,30 +1408,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await send_unique(update.message, uid, T[lang]["triage_pain_q3"],
                               reply_markup=inline_list(T[lang]["triage_pain_q3_opts"], "paindur"))
-            return
-
-        # ШАГ 4 покрыт хэндлером чисел (on_number_reply)
-
-        # ШАГ 5: красные флаги — текстом
-        if s.get("step") == 5:
-            rf_label = _match_from_syns(text, lang, RED_FLAG_SYNS) or \
-                       ("Нет" if lang=="ru" and re.search(r"\bнет\b", text.lower()) else
-                        "Немає" if lang=="uk" and re.search(r"\bнема\b", text.lower()) else
-                        "None" if lang=="en" and re.search(r"\bno(ne)?\b", text.lower()) else None)
-            if rf_label:
-                s.setdefault("answers", {})["red"] = rf_label
-                sev = int(s["answers"].get("severity", 5))
-                eid = episode_create(uid, "pain", sev, rf_label)
-                s["episode_id"] = eid
-                plan_lines = pain_plan(lang, [rf_label], profiles_get(uid))
-                prefix = personalized_prefix(lang, profiles_get(uid))
-                text_plan = (prefix + "\n" if prefix else "") + f"{T[lang]['plan_header']}\n" + "\n".join(plan_lines)
-                await update.message.reply_text(text_plan)
-                await update.message.reply_text(T[lang]["plan_accept"], reply_markup=inline_accept(lang))
-                s["step"] = 6
-                return
-            await send_unique(update.message, uid, T[lang]["triage_pain_q5"],
-                              reply_markup=inline_list(T[lang]["triage_pain_q5_opts"], "painrf"))
             return
 
     # активный pain-триаж: число вручную на шаге 4
@@ -1432,6 +1422,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                             reply_markup=inline_list(T[lang]["triage_pain_q5_opts"], "painrf"))
             return
         await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=inline_numbers_0_10())
+        return
+
+    # Если активна НЕ pain/profile тема — свободный текст сразу в LLM
+    s = sessions.get(uid, {})
+    if s.get("topic") and s.get("topic") not in {"pain","profile"}:
+        data = llm_router_answer(text, lang, prof)
+        prefix = personalized_prefix(lang, prof)
+        reply = ((prefix + "\n") if prefix else "") + (data.get("assistant_reply") or T[lang]["unknown"])
+        await update.message.reply_text(reply, reply_markup=inline_actions(lang))
+        for one in (data.get("followups") or [])[:2]:
+            await send_unique(update.message, uid, one)
         return
 
     # route by topic or LLM
@@ -1496,17 +1497,4 @@ def main():
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("settz", cmd_settz))
     app.add_handler(CommandHandler("checkin_on", cmd_checkin_on))
-    app.add_handler(CommandHandler("checkin_off", cmd_checkin_off))
-    app.add_handler(CommandHandler("ru", cmd_ru))
-    app.add_handler(CommandHandler("en", cmd_en))
-    app.add_handler(CommandHandler("uk", cmd_uk))
-
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.Regex(r"^(?:[0-9]|10)$"), on_number_reply))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-
-    logging.info(f"SHEETS_ENABLED={SHEETS_ENABLED}")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+    app.add_handler(CommandHandler("checkin_off", c
