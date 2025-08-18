@@ -117,6 +117,10 @@ T = {
         "px":"Considering your profile: {sex}, {age}y; goal — {goal}.",
         "back":"◀ Back",
         "exit":"Exit",
+        # --- Feedback ---
+        "fb_prompt": "Was this helpful?",
+        "fb_ask": "Write a short feedback message:",
+        "fb_thanks": "Thanks for your feedback! ✅",
     },
     "ru": {
         "welcome":"Привет! Я TendAI — ассистент здоровья и долголетия.\nРасскажи, что беспокоит; я подскажу. Сначала короткий опрос (~40с), чтобы советы были точнее.",
@@ -175,6 +179,10 @@ T = {
         "px":"С учётом профиля: {sex}, {age} лет; цель — {goal}.",
         "back":"◀ Назад",
         "exit":"Выйти",
+        # --- Feedback ---
+        "fb_prompt": "Был ли ответ полезен?",
+        "fb_ask": "Напишите короткий отзыв одним сообщением:",
+        "fb_thanks": "Спасибо за отзыв! ✅",
     },
     "uk": {
         "welcome":"Привіт! Я TendAI — асистент здоров’я та довголіття.\nРозкажи, що турбує; я підкажу. Спершу швидкий опитник (~40с) для точніших порад.",
@@ -233,6 +241,10 @@ T = {
         "px":"З урахуванням профілю: {sex}, {age} р.; мета — {goal}.",
         "back":"◀ Назад",
         "exit":"Вийти",
+        # --- Feedback ---
+        "fb_prompt": "Чи була відповідь корисною?",
+        "fb_ask": "Напишіть короткий відгук одним повідомленням:",
+        "fb_thanks": "Дякую за відгук! ✅",
     },
 }
 T["es"] = T["en"]  # простая заглушка
@@ -1000,6 +1012,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = _kb_for_code(lang, "painloc")
             await q.message.reply_text(T[lang]["triage_pain_q1"], reply_markup=kb); return
 
+        # Для прочих тем — LLM
         last = sessions.get(uid,{}).get("last_user_text","")
         prof = profiles_get(uid)
         prompt = f"topic:{topic}\nlast_user: {last or '—'}"
@@ -1009,6 +1022,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(reply, reply_markup=inline_actions(lang))
         for one in (data_llm.get("followups") or [])[:2]:
             await send_unique(q.message, uid, one, force=True)
+        # Показать блок отзыва
+        await show_feedback(context, chat_id, lang)
         return
 
     # Pain triage buttons
@@ -1046,6 +1061,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_plan = (prefix + "\n" if prefix else "") + f"{T[lang]['plan_header']}\n" + "\n".join(plan_lines)
         await q.message.reply_text(text_plan)
         await q.message.reply_text(T[lang]["plan_accept"], reply_markup=inline_accept(lang))
+        # Показать блок отзыва
+        await show_feedback(context, chat_id, lang)
         s["step"] = 6; return
 
     if data.startswith("acc|"):
@@ -1065,6 +1082,26 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                        data={"user_id":uid,"episode_id":s["episode_id"]})
         await q.message.reply_text(T[lang]["thanks"], reply_markup=inline_topic_kb(lang))
         sessions.pop(uid, None); return
+
+    # --- Feedback (👍 / 👎 / текст) ---
+    if data.startswith("fb|"):
+        kind = data.split("|", 1)[1]
+        u = q.from_user
+        name = f"{u.first_name or ''} {u.last_name or ''}".strip()
+        username = u.username or ""
+
+        if kind in ("up", "down"):
+            sessions.setdefault(uid, {})["last_fb_rating"] = kind
+            feedback_add(iso(utcnow()), uid, name, username, kind, "")
+            await q.message.reply_text(T[lang]["fb_thanks"])
+            await q.message.reply_text(T[lang]["fb_ask"])
+            sessions[uid]["awaiting_feedback_text"] = True
+            return
+
+        if kind == "ask":
+            sessions.setdefault(uid, {})["awaiting_feedback_text"] = True
+            await q.message.reply_text(T[lang]["fb_ask"])
+            return
 
     # smart follow-ups (actions)
     if data.startswith("act|"):
@@ -1342,6 +1379,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # первичное сохранение пользователя + приветствие
     urec = users_get(uid)
+
+    # --- Текстовый отзыв по запросу ---
+    if sessions.get(uid, {}).get("awaiting_feedback_text"):
+        sessions[uid]["awaiting_feedback_text"] = False
+        rating = sessions.get(uid, {}).get("last_fb_rating", "")
+        name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        feedback_add(iso(utcnow()), uid, name, user.username or "", rating, text)
+        lang_fb = norm_lang(users_get(uid).get("lang") or getattr(user,"language_code",None) or "en")
+        await update.message.reply_text(T[lang_fb]["fb_thanks"])
+        return
+
     if not urec:
         lang_guess = detect_lang_from_text(text, norm_lang(getattr(user, "language_code", None)))
         users_upsert(uid, user.username or "", lang_guess)
@@ -1372,6 +1420,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan = serious_plan(lang, sc, prof)
         msg = (prefix + "\n" if prefix else "") + "\n".join(plan)
         await update.message.reply_text(msg, reply_markup=inline_actions(lang))
+        # Показать блок отзыва
+        await show_feedback(context, update.effective_chat.id, lang)
         return
 
     # ежедневный чек-ин — заметка
@@ -1415,6 +1465,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text_plan = (prefix + "\n" if prefix else "") + f"{T[lang]['plan_header']}\n" + "\n".join(plan_lines)
                 await update.message.reply_text(text_plan)
                 await update.message.reply_text(T[lang]["plan_accept"], reply_markup=inline_accept(lang))
+                # Показать блок отзыва
+                await show_feedback(context, update.effective_chat.id, lang)
                 s["step"] = 6; return
             ask = data.get("ask") or ""
             kb_code = data.get("kb")
@@ -1466,6 +1518,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text_plan = (prefix + "\n" if prefix else "") + f"{T[lang]['plan_header']}\n" + "\n".join(plan_lines)
                 await update.message.reply_text(text_plan)
                 await update.message.reply_text(T[lang]["plan_accept"], reply_markup=inline_accept(lang))
+                # Показать блок отзыва
+                await show_feedback(context, update.effective_chat.id, lang)
                 s["step"] = 6; return
             await send_unique(update.message, uid, T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang,"painrf")); return
 
@@ -1484,6 +1538,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply, reply_markup=inline_actions(lang))
     for one in (data.get("followups") or [])[:2]:
         await send_unique(update.message, uid, one, force=True)
+    # Показать блок отзыва
+    await show_feedback(context, update.effective_chat.id, lang)
 
 # ------------- Number replies (0–10 typed) -------------
 async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1573,6 +1629,21 @@ def inline_actions(lang:str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(T[lang]["act_find_lab"], callback_data="act|lab")],
         [InlineKeyboardButton(T[lang]["act_er"], callback_data="act|er")]
     ])
+
+# === FEEDBACK UI ===
+def inline_feedback(lang: str) -> InlineKeyboardMarkup:
+    rows = [[
+        InlineKeyboardButton("👍", callback_data="fb|up"),
+        InlineKeyboardButton("👎", callback_data="fb|down"),
+        InlineKeyboardButton("✍️ " + {"ru":"Отзыв","uk":"Відгук","en":"Feedback","es":"Comentario"}[lang], callback_data="fb|ask")
+    ]]
+    return InlineKeyboardMarkup(rows)
+
+async def show_feedback(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str):
+    try:
+        await context.bot.send_message(chat_id, T[lang]["fb_prompt"], reply_markup=inline_feedback(lang))
+    except Exception as e:
+        logging.error(f"feedback prompt error: {e}")
 
 # ------------- App init -------------
 def main():
