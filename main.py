@@ -117,10 +117,13 @@ T = {
         "px":"Considering your profile: {sex}, {age}y; goal — {goal}.",
         "back":"◀ Back",
         "exit":"Exit",
-        # --- Feedback ---
-        "fb_prompt": "Was this helpful?",
-        "fb_ask": "Write a short feedback message:",
-        "fb_thanks": "Thanks for your feedback! ✅",
+        # feedback
+        "ask_fb":"Was this helpful?",
+        "fb_thanks":"Thanks for your feedback! ✅",
+        "fb_write":"Write a short feedback message:",
+        "fb_good":"👍 Like",
+        "fb_bad":"👎 Dislike",
+        "fb_free":"📝 Feedback",
     },
     "ru": {
         "welcome":"Привет! Я TendAI — ассистент здоровья и долголетия.\nРасскажи, что беспокоит; я подскажу. Сначала короткий опрос (~40с), чтобы советы были точнее.",
@@ -179,10 +182,13 @@ T = {
         "px":"С учётом профиля: {sex}, {age} лет; цель — {goal}.",
         "back":"◀ Назад",
         "exit":"Выйти",
-        # --- Feedback ---
-        "fb_prompt": "Был ли ответ полезен?",
-        "fb_ask": "Напишите короткий отзыв одним сообщением:",
-        "fb_thanks": "Спасибо за отзыв! ✅",
+        # feedback
+        "ask_fb":"Это было полезно?",
+        "fb_thanks":"Спасибо за отзыв! ✅",
+        "fb_write":"Напишите короткий отзыв одним сообщением:",
+        "fb_good":"👍 Нравится",
+        "fb_bad":"👎 Не полезно",
+        "fb_free":"📝 Отзыв",
     },
     "uk": {
         "welcome":"Привіт! Я TendAI — асистент здоров’я та довголіття.\nРозкажи, що турбує; я підкажу. Спершу швидкий опитник (~40с) для точніших порад.",
@@ -241,10 +247,13 @@ T = {
         "px":"З урахуванням профілю: {sex}, {age} р.; мета — {goal}.",
         "back":"◀ Назад",
         "exit":"Вийти",
-        # --- Feedback ---
-        "fb_prompt": "Чи була відповідь корисною?",
-        "fb_ask": "Напишіть короткий відгук одним повідомленням:",
-        "fb_thanks": "Дякую за відгук! ✅",
+        # feedback
+        "ask_fb":"Чи було це корисно?",
+        "fb_thanks":"Дякую за відгук! ✅",
+        "fb_write":"Напишіть короткий відгук одним повідомленням:",
+        "fb_good":"👍 Подобається",
+        "fb_bad":"👎 Не корисно",
+        "fb_free":"📝 Відгук",
     },
 }
 T["es"] = T["en"]  # простая заглушка
@@ -508,8 +517,22 @@ def daily_add(ts, uid, mood, comment):
     else:
         MEM_DAILY.append({"timestamp":ts,"user_id":str(uid),"mood":mood,"comment":comment or ""})
 
+# --------- JobQueue helper ----------
+def _has_jq_app(app) -> bool:
+    return getattr(app, "job_queue", None) is not None
+
+def _has_jq_ctx(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    try:
+        return getattr(context.application, "job_queue", None) is not None
+    except Exception:
+        return False
+
 # --------- Scheduling ---------
 def schedule_from_sheet_on_start(app):
+    if not _has_jq_app(app):
+        logging.warning("JobQueue not available – skip scheduling on start.")
+        return
+
     now = utcnow()
     src = ws_episodes.get_all_records() if SHEETS_ENABLED else MEM_EPISODES
     for r in src:
@@ -554,6 +577,9 @@ def local_to_utc_hour_min(tz_offset_hours:int, hhmm:str)->Tuple[int,int]:
     h,m = hhmm_tuple(hhmm); return ((h - tz_offset_hours) % 24, m)
 
 def schedule_daily_checkin(app, uid:int, tz_off:int, hhmm_local:str, lang:str):
+    if not _has_jq_app(app):
+        logging.warning(f"JobQueue not available – skip daily scheduling for uid={uid}.")
+        return
     for j in app.job_queue.get_jobs_by_name(f"daily_{uid}"):
         j.schedule_removal()
     h_utc, m_utc = local_to_utc_hour_min(tz_off, hhmm_local)
@@ -857,7 +883,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(T[lang]["ask_consent"], reply_markup=kb)
     tz_off = int(str(u.get("tz_offset") or "0"))
     hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
-    schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)
+    if _has_jq_ctx(context):
+        schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)
+    else:
+        logging.warning("JobQueue not available on /start – daily check-in not scheduled.")
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(update.effective_user.id).get("lang") or "en")
@@ -907,7 +936,8 @@ async def cmd_settz(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                          "en":"Usage: /settz +3","es":"Uso: /settz +3"}[lang]); return
     off = int(parts[1]); users_set(uid,"tz_offset",str(off))
     hhmm = users_get(uid).get("checkin_hour") or DEFAULT_CHECKIN_LOCAL
-    schedule_daily_checkin(context.application, uid, off, hhmm, lang)
+    if _has_jq_ctx(context):
+        schedule_daily_checkin(context.application, uid, off, hhmm, lang)
     await update.message.reply_text({"ru":f"Сдвиг часового пояса: {off}ч",
                                      "uk":f"Зсув: {off} год",
                                      "en":f"Timezone offset: {off}h",
@@ -924,7 +954,10 @@ async def cmd_checkin_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hhmm = m.group(0)
     users_set(uid,"checkin_hour",hhmm)
     tz_off = int(str(users_get(uid).get("tz_offset") or "0"))
-    schedule_daily_checkin(context.application, uid, tz_off, hhmm, lang)
+    if _has_jq_ctx(context):
+        schedule_daily_checkin(context.application, uid, tz_off, hhmm, lang)
+    else:
+        logging.warning("JobQueue not available – daily check-in not scheduled.")
     await update.message.reply_text({"ru":f"Ежедневный чек-ин включён ({hhmm}).",
                                      "uk":f"Щоденний чек-ін увімкнено ({hhmm}).",
                                      "en":f"Daily check-in enabled ({hhmm}).",
@@ -932,8 +965,9 @@ async def cmd_checkin_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_checkin_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    for j in context.application.job_queue.get_jobs_by_name(f"daily_{uid}"):
-        j.schedule_removal()
+    if _has_jq_ctx(context):
+        for j in context.application.job_queue.get_jobs_by_name(f"daily_{uid}"):
+            j.schedule_removal()
     lang = norm_lang(users_get(uid).get("lang") or "en")
     await update.message.reply_text({"ru":"Ежедневный чек-ин выключен.",
                                      "uk":"Щоденний чек-ін вимкнено.",
@@ -1012,7 +1046,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = _kb_for_code(lang, "painloc")
             await q.message.reply_text(T[lang]["triage_pain_q1"], reply_markup=kb); return
 
-        # Для прочих тем — LLM
         last = sessions.get(uid,{}).get("last_user_text","")
         prof = profiles_get(uid)
         prompt = f"topic:{topic}\nlast_user: {last or '—'}"
@@ -1020,10 +1053,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prefix = personalized_prefix(lang, prof)
         reply = ((prefix + "\n") if prefix else "") + (data_llm.get("assistant_reply") or T[lang]["unknown"])
         await q.message.reply_text(reply, reply_markup=inline_actions(lang))
+        try:
+            await q.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
+        except Exception:
+            pass
         for one in (data_llm.get("followups") or [])[:2]:
             await send_unique(q.message, uid, one, force=True)
-        # Показать блок отзыва
-        await show_feedback(context, chat_id, lang)
         return
 
     # Pain triage buttons
@@ -1061,8 +1096,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_plan = (prefix + "\n" if prefix else "") + f"{T[lang]['plan_header']}\n" + "\n".join(plan_lines)
         await q.message.reply_text(text_plan)
         await q.message.reply_text(T[lang]["plan_accept"], reply_markup=inline_accept(lang))
-        # Показать блок отзыва
-        await show_feedback(context, chat_id, lang)
+        try:
+            await q.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
+        except Exception:
+            pass
         s["step"] = 6; return
 
     if data.startswith("acc|"):
@@ -1078,30 +1115,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if delay and s.get("episode_id"):
             next_time = utcnow() + timedelta(hours=delay)
             episode_set(s["episode_id"], "next_checkin_at", iso(next_time))
-            context.job_queue.run_once(job_checkin_episode, when=delay*3600,
-                                       data={"user_id":uid,"episode_id":s["episode_id"]})
+            if _has_jq_ctx(context):
+                context.application.job_queue.run_once(job_checkin_episode, when=delay*3600,
+                                                       data={"user_id":uid,"episode_id":s["episode_id"]})
+            else:
+                logging.warning("JobQueue not available – episode follow-up not scheduled.")
         await q.message.reply_text(T[lang]["thanks"], reply_markup=inline_topic_kb(lang))
         sessions.pop(uid, None); return
-
-    # --- Feedback (👍 / 👎 / текст) ---
-    if data.startswith("fb|"):
-        kind = data.split("|", 1)[1]
-        u = q.from_user
-        name = f"{u.first_name or ''} {u.last_name or ''}".strip()
-        username = u.username or ""
-
-        if kind in ("up", "down"):
-            sessions.setdefault(uid, {})["last_fb_rating"] = kind
-            feedback_add(iso(utcnow()), uid, name, username, kind, "")
-            await q.message.reply_text(T[lang]["fb_thanks"])
-            await q.message.reply_text(T[lang]["fb_ask"])
-            sessions[uid]["awaiting_feedback_text"] = True
-            return
-
-        if kind == "ask":
-            sessions.setdefault(uid, {})["awaiting_feedback_text"] = True
-            await q.message.reply_text(T[lang]["fb_ask"])
-            return
 
     # smart follow-ups (actions)
     if data.startswith("act|"):
@@ -1112,8 +1132,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hours = {"4h":4, "evening":6, "morning":16}.get(key,4)
             when_ = utcnow() + timedelta(hours=hours)
             rid = reminder_add(uid, T[lang]["thanks"], when_)
-            context.job_queue.run_once(job_oneoff_reminder, when=hours*3600,
-                                       data={"user_id":uid,"reminder_id":rid})
+            if _has_jq_ctx(context):
+                context.application.job_queue.run_once(job_oneoff_reminder, when=hours*3600,
+                                                       data={"user_id":uid,"reminder_id":rid})
+            else:
+                logging.warning("JobQueue not available – one-off reminder not scheduled.")
             await q.message.reply_text(T[lang]["thanks"]); return
         if kind=="save":
             episode_create(uid, "general", 0, "")
@@ -1131,6 +1154,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(T[lang]["act_city_prompt"]); return
         if kind=="er":
             await q.message.reply_text(T[lang]["er_text"]); return
+
+    # --- Feedback buttons ---
+    if data.startswith("fb|"):
+        sub = data.split("|",1)[1]
+        if sub == "up":
+            feedback_add(iso(utcnow()), uid, "feedback_yes", q.from_user.username, 1, "")
+            await q.message.reply_text(T[lang]["fb_thanks"])
+            return
+        if sub == "down":
+            feedback_add(iso(utcnow()), uid, "feedback_no", q.from_user.username, 0, "")
+            await q.message.reply_text(T[lang]["fb_thanks"])
+            return
+        if sub == "text":
+            sessions.setdefault(uid,{})["awaiting_free_feedback"] = True
+            await q.message.reply_text(T[lang]["fb_write"])
+            return
 
 # ------------- Pain triage helpers -------------
 def detect_or_choose_topic(lang: str, text: str) -> Optional[str]:
@@ -1217,7 +1256,7 @@ def pain_plan(lang: str, red_flags_selected: List[str], profile: dict) -> List[s
 
 # ----- Serious conditions -----
 SERIOUS_KWS = {
-    "diabetes": ["diabetes","диабет","сахарный","цукров", "глюкоза", "hba1c", "гликированный"],
+    "diabetes": ["diabetes","диабет","сахарный","цукров", "गлюкоза", "hba1c", "гликированный","глюкоза"],
     "hepatitis": ["hepatitis","гепатит","печень hbs","hcv","alt","ast"],
     "cancer": ["cancer","рак","онко","онколог","опухол","пухлина","tumor"],
     "tb": ["tuberculosis","tb","туберкул","туберкульоз"],
@@ -1379,17 +1418,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # первичное сохранение пользователя + приветствие
     urec = users_get(uid)
-
-    # --- Текстовый отзыв по запросу ---
-    if sessions.get(uid, {}).get("awaiting_feedback_text"):
-        sessions[uid]["awaiting_feedback_text"] = False
-        rating = sessions.get(uid, {}).get("last_fb_rating", "")
-        name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-        feedback_add(iso(utcnow()), uid, name, user.username or "", rating, text)
-        lang_fb = norm_lang(users_get(uid).get("lang") or getattr(user,"language_code",None) or "en")
-        await update.message.reply_text(T[lang_fb]["fb_thanks"])
-        return
-
     if not urec:
         lang_guess = detect_lang_from_text(text, norm_lang(getattr(user, "language_code", None)))
         users_upsert(uid, user.username or "", lang_guess)
@@ -1399,7 +1427,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang_guess]["yes"], callback_data="consent|yes"),
                                     InlineKeyboardButton(T[lang_guess]["no"], callback_data="consent|no")]])
         await update.message.reply_text(T[lang_guess]["ask_consent"], reply_markup=kb)
-        schedule_daily_checkin(context.application, uid, 0, DEFAULT_CHECKIN_LOCAL, lang_guess)
+        if _has_jq_ctx(context):
+            schedule_daily_checkin(context.application, uid, 0, DEFAULT_CHECKIN_LOCAL, lang_guess)
         return
 
     # динамическая смена языка
@@ -1420,8 +1449,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan = serious_plan(lang, sc, prof)
         msg = (prefix + "\n" if prefix else "") + "\n".join(plan)
         await update.message.reply_text(msg, reply_markup=inline_actions(lang))
-        # Показать блок отзыва
-        await show_feedback(context, update.effective_chat.id, lang)
+        try:
+            await update.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
+        except Exception:
+            pass
         return
 
     # ежедневный чек-ин — заметка
@@ -1429,6 +1460,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         daily_add(iso(utcnow()), uid, "note", text)
         sessions[uid]["awaiting_daily_comment"] = False
         await update.message.reply_text(T[lang]["mood_thanks"]); return
+
+    # свободный отзыв
+    if sessions.get(uid, {}).get("awaiting_free_feedback"):
+        sessions[uid]["awaiting_free_feedback"] = False
+        feedback_add(iso(utcnow()), uid, "free", user.username, "", text)
+        await update.message.reply_text(T[lang]["fb_thanks"]); return
 
     # «лаборатория» — город
     if sessions.get(uid, {}).get("awaiting_city"):
@@ -1465,8 +1502,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text_plan = (prefix + "\n" if prefix else "") + f"{T[lang]['plan_header']}\n" + "\n".join(plan_lines)
                 await update.message.reply_text(text_plan)
                 await update.message.reply_text(T[lang]["plan_accept"], reply_markup=inline_accept(lang))
-                # Показать блок отзыва
-                await show_feedback(context, update.effective_chat.id, lang)
+                try:
+                    await update.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
+                except Exception:
+                    pass
                 s["step"] = 6; return
             ask = data.get("ask") or ""
             kb_code = data.get("kb")
@@ -1518,8 +1557,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text_plan = (prefix + "\n" if prefix else "") + f"{T[lang]['plan_header']}\n" + "\n".join(plan_lines)
                 await update.message.reply_text(text_plan)
                 await update.message.reply_text(T[lang]["plan_accept"], reply_markup=inline_accept(lang))
-                # Показать блок отзыва
-                await show_feedback(context, update.effective_chat.id, lang)
+                try:
+                    await update.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
+                except Exception:
+                    pass
                 s["step"] = 6; return
             await send_unique(update.message, uid, T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang,"painrf")); return
 
@@ -1536,10 +1577,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prefix = personalized_prefix(lang, prof)
     reply = ((prefix + "\n") if prefix else "") + (data.get("assistant_reply") or T[lang]["unknown"])
     await update.message.reply_text(reply, reply_markup=inline_actions(lang))
+    try:
+        await update.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
+    except Exception:
+        pass
     for one in (data.get("followups") or [])[:2]:
         await send_unique(update.message, uid, one, force=True)
-    # Показать блок отзыва
-    await show_feedback(context, update.effective_chat.id, lang)
 
 # ------------- Number replies (0–10 typed) -------------
 async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1630,20 +1673,12 @@ def inline_actions(lang:str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(T[lang]["act_er"], callback_data="act|er")]
     ])
 
-# === FEEDBACK UI ===
-def inline_feedback(lang: str) -> InlineKeyboardMarkup:
-    rows = [[
-        InlineKeyboardButton("👍", callback_data="fb|up"),
-        InlineKeyboardButton("👎", callback_data="fb|down"),
-        InlineKeyboardButton("✍️ " + {"ru":"Отзыв","uk":"Відгук","en":"Feedback","es":"Comentario"}[lang], callback_data="fb|ask")
-    ]]
-    return InlineKeyboardMarkup(rows)
-
-async def show_feedback(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str):
-    try:
-        await context.bot.send_message(chat_id, T[lang]["fb_prompt"], reply_markup=inline_feedback(lang))
-    except Exception as e:
-        logging.error(f"feedback prompt error: {e}")
+def inline_feedback_kb(lang:str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(T[lang]["fb_good"], callback_data="fb|up"),
+         InlineKeyboardButton(T[lang]["fb_bad"], callback_data="fb|down"),
+         InlineKeyboardButton(T[lang]["fb_free"], callback_data="fb|text")]
+    ])
 
 # ------------- App init -------------
 def main():
