@@ -876,6 +876,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions.setdefault(user.id, {})["last_user_text"] = "/start"
     await update.message.reply_text(T[lang]["welcome"], reply_markup=ReplyKeyboardRemove())
     await update.message.reply_text(T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
+    # >>> AUTO-INTAKE: показать опрос один раз при первом /start, если профиля ещё нет
+    if not profiles_get(user.id):
+        await start_profile_ctx(context, update.effective_chat.id, lang, user.id)
     u = users_get(user.id)
     if (u.get("consent") or "").lower() not in {"yes","no"}:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["yes"], callback_data="consent|yes"),
@@ -1429,6 +1432,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(T[lang_guess]["ask_consent"], reply_markup=kb)
         if _has_jq_ctx(context):
             schedule_daily_checkin(context.application, uid, 0, DEFAULT_CHECKIN_LOCAL, lang_guess)
+        # >>> AUTO-INTAKE: сразу запустить первый опрос новому пользователю
+        await start_profile_ctx(context, update.effective_chat.id, lang_guess, uid)
         return
 
     # динамическая смена языка
