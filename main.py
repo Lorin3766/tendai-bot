@@ -1696,14 +1696,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             m = re.fullmatch(r"(?:10|[0-9])", text)
             if m:
                 sev = int(m.group(0)); s.setdefault("answers",{})["severity"] = sev; s["step"] = 5
-                await update.message.reply_text(T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang,"painrf")); return
-            await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_code(lang,"num")); return
+               await update.message.reply_text(T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang, "painrf")); return
+await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_code(lang, "num")); return
 
-    # ---- Общий фолбек — LLM + персонализация ----
+
+     # ---- Общий фолбек — LLM + персонализация ----
     prof = profiles_get(uid)
     data = llm_router_answer(text, lang, prof)
     prefix = personalized_prefix(lang, prof)
-        reply = ((prefix + "\n") if prefix else "") + (data.get("assistant_reply") or T[lang]["unknown"])
+    reply = ((prefix + "\n") if prefix else "") + (data.get("assistant_reply") or T[lang]["unknown"])
     await update.message.reply_text(reply, reply_markup=inline_actions(lang))
     try:
         await update.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
