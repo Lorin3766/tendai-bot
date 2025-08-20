@@ -1610,7 +1610,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         profiles_upsert(uid,{key:val}); sessions[uid][key]=val
         await advance_profile_ctx(context, update.effective_chat.id, lang, uid); return
 
-    # ===== LLM-ОРКЕСТРАТОР внутри pain-триажа =====
+        # ===== LLM-ОРКЕСТРАТОР внутри pain-триажа =====
     s = sessions.get(uid, {})
     if s.get("topic") == "pain":
         if re.search(r"\b(stop|exit|back|назад|выход|выйти)\b", text.lower()):
@@ -1620,10 +1620,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         data = llm_decide_next_pain_step(text, lang, s)
         if data and isinstance(data, dict):
-            s.setdefault("answers", {}).update({k:v for k,v in (data.get("updates") or {}).items() if v not in (None,"")})
+            s.setdefault("answers", {}).update({k: v for k, v in (data.get("updates") or {}).items() if v not in (None, "")})
             filled = s["answers"]
             if "red" in filled and "severity" in filled:
-                sev = int(filled.get("severity", 5)); red = str(filled.get("red") or "None")
+                sev = int(filled.get("severity", 5))
+                red = str(filled.get("red") or "None")
                 eid = episode_create(uid, "pain", sev, red); s["episode_id"] = eid
                 plan_lines = pain_plan(lang, [red], profiles_get(uid))
                 prefix = personalized_prefix(lang, profiles_get(uid))
@@ -1634,48 +1635,75 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
                 except Exception:
                     pass
-                s["step"] = 6; return
+                s["step"] = 6
+                return
+
             ask = data.get("ask") or ""
             kb_code = data.get("kb")
             if kb_code and kb_code != "done":
-                s["step"] = {"painloc":1,"painkind":2,"paindur":3,"num":4,"painrf":5}.get(kb_code, s.get("step",1))
-                await send_unique(update.message, uid,
-                                  ask or {"painloc":T[lang]["triage_pain_q1"],"painkind":T[lang]["triage_pain_q2"],
-                                          "paindur":T[lang]["triage_pain_q3"],"num":T[lang]["triage_pain_q4"],
-                                          "painrf":T[lang]["triage_pain_q5"]}[kb_code],
-                                  reply_markup=_kb_for_code(lang, kb_code),
-                                  force=True)
+                s["step"] = {"painloc": 1, "painkind": 2, "paindur": 3, "num": 4, "painrf": 5}.get(kb_code, s.get("step", 1))
+                await send_unique(
+                    update.message,
+                    uid,
+                    ask or {
+                        "painloc": T[lang]["triage_pain_q1"],
+                        "painkind": T[lang]["triage_pain_q2"],
+                        "paindur": T[lang]["triage_pain_q3"],
+                        "num": T[lang]["triage_pain_q4"],
+                        "painrf": T[lang]["triage_pain_q5"],
+                    }[kb_code],
+                    reply_markup=_kb_for_code(lang, kb_code),
+                    force=True,
+                )
                 return
 
         # 2) Fallback по синонимам
         if s.get("step") == 1:
             label = _match_from_syns(text, lang, PAIN_LOC_SYNS)
             if label:
-                s.setdefault("answers", {})["loc"] = label; s["step"] = 2
-                await send_unique(update.message, uid, T[lang]["triage_pain_q2"], reply_markup=_kb_for_code(lang,"painkind"))
+                s.setdefault("answers", {})["loc"] = label
+                s["step"] = 2
+                await send_unique(update.message, uid, T[lang]["triage_pain_q2"], reply_markup=_kb_for_code(lang, "painkind"))
                 return
-            await send_unique(update.message, uid, T[lang]["triage_pain_q1"], reply_markup=_kb_for_code(lang,"painloc")); return
+            await send_unique(update.message, uid, T[lang]["triage_pain_q1"], reply_markup=_kb_for_code(lang, "painloc"))
+            return
 
         if s.get("step") == 2:
             label = _match_from_syns(text, lang, PAIN_KIND_SYNS)
             if label:
-                s.setdefault("answers", {})["kind"] = label; s["step"] = 3
-                await send_unique(update.message, uid, T[lang]["triage_pain_q3"], reply_markup=_kb_for_code(lang,"paindur"))
+                s.setdefault("answers", {})["kind"] = label
+                s["step"] = 3
+                await send_unique(update.message, uid, T[lang]["triage_pain_q3"], reply_markup=_kb_for_code(lang, "paindur"))
                 return
-            await send_unique(update.message, uid, T[lang]["triage_pain_q2"], reply_markup=_kb_for_code(lang,"painkind")); return
+            await send_unique(update.message, uid, T[lang]["triage_pain_q2"], reply_markup=_kb_for_code(lang, "painkind"))
+            return
 
         if s.get("step") == 3:
             label = _classify_duration(text, lang)
             if label:
-                s.setdefault("answers", {})["duration"] = label; s["step"] = 4
-                await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_code(lang,"num")); return
-            await send_unique(update.message, uid, T[lang]["triage_pain_q3"], reply_markup=_kb_for_code(lang,"paindur")); return
+                s.setdefault("answers", {})["duration"] = label
+                s["step"] = 4
+                await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_code(lang, "num"))
+                return
+            await send_unique(update.message, uid, T[lang]["triage_pain_q3"], reply_markup=_kb_for_code(lang, "paindur"))
+            return
+
+        if s.get("step") == 4:
+            m = re.fullmatch(r"(?:10|[0-9])", text)
+            if m:
+                sev = int(m.group(0))
+                s.setdefault("answers", {})["severity"] = sev
+                s["step"] = 5
+                await update.message.reply_text(T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang, "painrf"))
+                return
+            await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_code(lang, "num"))
+            return
 
         if s.get("step") == 5:
             rf_label = _match_from_syns(text, lang, RED_FLAG_SYNS) or \
-                       ("Нет" if lang=="ru" and re.search(r"\bнет\b", text.lower()) else
-                        "Немає" if lang=="uk" and re.search(r"\bнема\b", text.lower()) else
-                        "None" if lang in ("en","es") and re.search(r"\bno(ne|)?\b", text.lower()) else None)
+                       ("Нет" if lang == "ru" and re.search(r"\bнет\b", text.lower()) else
+                        "Немає" if lang == "uk" and re.search(r"\bнема\b", text.lower()) else
+                        "None" if lang in ("en", "es") and re.search(r"\bno(ne|)?\b", text.lower()) else None)
             if rf_label:
                 s.setdefault("answers", {})["red"] = rf_label
                 sev = int(s["answers"].get("severity", 5))
@@ -1689,24 +1717,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
                 except Exception:
                     pass
-                s["step"] = 6; return
-            await send_unique(update.message, uid, T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang,"painrf")); return
-
-              if s.get("step")==4:
-            m = re.fullmatch(r"(?:10|[0-9])", text)
-            if m:
-                sev = int(m.group(0))
-                s.setdefault("answers", {})["severity"] = sev
-                s["step"] = 5
-                await update.message.reply_text(
-                    T[lang]["triage_pain_q5"],
-                    reply_markup=_kb_for_code(lang, "painrf"),
-                )
+                s["step"] = 6
                 return
-            await update.message.reply_text(
-                T[lang]["triage_pain_q4"],
-                reply_markup=_kb_for_code(lang, "num"),
-            )
+            await send_unique(update.message, uid, T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang, "painrf"))
             return
 
     # ---- Общий фолбек — LLM + персонализация ----
@@ -1722,6 +1735,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for one in (data.get("followups") or [])[:2]:
         await send_unique(update.message, uid, one, force=True)
     return
+
 
 
 
