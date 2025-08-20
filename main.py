@@ -1692,15 +1692,24 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 s["step"] = 6; return
             await send_unique(update.message, uid, T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang,"painrf")); return
 
-        if s.get("step")==4:
+              if s.get("step")==4:
             m = re.fullmatch(r"(?:10|[0-9])", text)
             if m:
-                sev = int(m.group(0)); s.setdefault("answers",{})["severity"] = sev; s["step"] = 5
-               await update.message.reply_text(T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang, "painrf")); return
-await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_code(lang, "num")); return
+                sev = int(m.group(0))
+                s.setdefault("answers", {})["severity"] = sev
+                s["step"] = 5
+                await update.message.reply_text(
+                    T[lang]["triage_pain_q5"],
+                    reply_markup=_kb_for_code(lang, "painrf"),
+                )
+                return
+            await update.message.reply_text(
+                T[lang]["triage_pain_q4"],
+                reply_markup=_kb_for_code(lang, "num"),
+            )
+            return
 
-
-     # ---- Общий фолбек — LLM + персонализация ----
+    # ---- Общий фолбек — LLM + персонализация ----
     prof = profiles_get(uid)
     data = llm_router_answer(text, lang, prof)
     prefix = personalized_prefix(lang, prof)
@@ -1713,6 +1722,7 @@ await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_
     for one in (data.get("followups") or [])[:2]:
         await send_unique(update.message, uid, one, force=True)
     return
+
 
 
 # ---------- Inline keyboards ----------
