@@ -62,7 +62,7 @@ def norm_lang(code: Optional[str]) -> str:
 T = {
     "en": {
         "welcome": "Hi! I’m TendAI — your health & longevity assistant.\nDescribe what’s bothering you; I’ll guide you. Let’s do a quick 40s intake to tailor advice.",
-        "help": "Short checkups, 24–48h plans, reminders, daily check-ins.\nCommands: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /ru /uk /en /es",
+        "help": "Short checkups, 24–48h plans, reminders, daily check-ins.\nCommands: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /health60 /ru /uk /en /es",
         "privacy": "TendAI is not a medical service and can’t replace a doctor. We store minimal data for reminders. /delete_data to erase.",
         "paused_on": "Notifications paused. Use /resume to enable.",
         "paused_off": "Notifications resumed.",
@@ -124,10 +124,17 @@ T = {
         "fb_good":"👍 Like",
         "fb_bad":"👎 Dislike",
         "fb_free":"📝 Feedback",
+        # Health60
+        "h60_btn": "Health in 60 seconds",
+        "h60_intro": "Write briefly what bothers you (e.g., “headache”, “fatigue”, “stomach pain”). I’ll give you 3 key tips in 60 seconds.",
+        "h60_t1": "Possible causes",
+        "h60_t2": "Do now (next 24–48h)",
+        "h60_t3": "When to see a doctor",
+        "h60_serious": "Serious to rule out",
     },
     "ru": {
         "welcome":"Привет! Я TendAI — ассистент здоровья и долголетия.\nРасскажи, что беспокоит; я подскажу. Сначала короткий опрос (~40с), чтобы советы были точнее.",
-        "help":"Короткие проверки, план на 24–48 ч, напоминания, ежедневные чек-ины.\nКоманды: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +3 /ru /uk /en /es",
+        "help":"Короткие проверки, план на 24–48 ч, напоминания, ежедневные чек-ины.\nКоманды: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +3 /health60 /ru /uk /en /es",
         "privacy":"TendAI не заменяет врача. Храним минимум данных для напоминаний. /delete_data — удалить.",
         "paused_on":"Напоминания поставлены на паузу. /resume — включить.",
         "paused_off":"Напоминания снова включены.",
@@ -189,10 +196,17 @@ T = {
         "fb_good":"👍 Нравится",
         "fb_bad":"👎 Не полезно",
         "fb_free":"📝 Отзыв",
+        # Health60
+        "h60_btn": "Здоровье за 60 секунд",
+        "h60_intro": "Коротко напишите, что беспокоит (например: «болит голова», «усталость», «боль в животе»). Я дам 3 ключевых совета за 60 секунд.",
+        "h60_t1": "Возможные причины",
+        "h60_t2": "Что сделать сейчас (24–48 ч)",
+        "h60_t3": "Когда обратиться к врачу",
+        "h60_serious": "Что серьёзное исключить",
     },
     "uk": {
         "welcome":"Привіт! Я TendAI — асистент здоров’я та довголіття.\nРозкажи, що турбує; я підкажу. Спершу швидкий опитник (~40с) для точніших порад.",
-        "help":"Короткі перевірки, план на 24–48 год, нагадування, щоденні чек-іни.\nКоманди: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /ru /uk /en /es",
+        "help":"Короткі перевірки, план на 24–48 год, нагадування, щоденні чек-іни.\nКоманди: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /health60 /ru /uk /en /es",
         "privacy":"TendAI не замінює лікаря. Зберігаємо мінімум даних для нагадувань. /delete_data — видалити.",
         "paused_on":"Нагадування призупинені. /resume — увімкнути.",
         "paused_off":"Нагадування знову увімкнені.",
@@ -254,6 +268,13 @@ T = {
         "fb_good":"👍 Подобається",
         "fb_bad":"👎 Не корисно",
         "fb_free":"📝 Відгук",
+        # Health60
+        "h60_btn": "Здоров’я за 60 секунд",
+        "h60_intro": "Коротко напишіть, що турбує (наприклад: «болить голова», «втома», «біль у животі»). Дам 3 ключові поради за 60 секунд.",
+        "h60_t1": "Можливі причини",
+        "h60_t2": "Що зробити зараз (24–48 год)",
+        "h60_t3": "Коли звернутися до лікаря",
+        "h60_serious": "Що серйозне виключити",
     },
 }
 T["es"] = T["en"]  # простая заглушка
@@ -864,6 +885,83 @@ def _classify_duration(text: str, lang: str) -> Optional[str]:
         return {"ru":"3–24ч","uk":"3–24год","en":"3–24h","es":"3–24h"}[lang]
     return None
 
+# -------- Health60 (quick triage) --------
+SYS_H60 = (
+    "You are TendAI — a concise, warm, professional health & longevity assistant (not a doctor). "
+    "Always answer strictly in {lang}. Keep it short and practical. "
+    "Given a symptom text and a brief user profile, produce a compact JSON ONLY with keys: "
+    "{\"causes\": [\"...\"], \"serious\": \"...\", \"do_now\": [\"...\"], \"see_doctor\": [\"...\"]}. "
+    "Rules: 2–4 simple causes (lay language), exactly 1 serious item to rule out, "
+    "3–5 \"do_now\" concrete steps for the next 24–48h, 2–3 \"see_doctor\" cues (when to seek care). "
+    "No extra keys, no prose outside JSON."
+)
+
+def _fmt_bullets(items: list) -> str:
+    return "\n".join([f"• {x}" for x in items if isinstance(x, str) and x.strip()])
+
+def health60_make_plan(lang: str, symptom_text: str, profile: dict) -> str:
+    # лаконичный фоллбек на случай отсутствия LLM/ошибки
+    fallback_map = {
+        "ru": (
+            f"{T['ru']['h60_t1']}:\n• Наиболее вероятные бытовые причины\n"
+            f"{T['ru']['h60_serious']}: • Исключить редкие, но серьёзные состояния при ухудшении\n\n"
+            f"{T['ru']['h60_t2']}:\n• Вода 300–500 мл\n• Короткий отдых 15–20 мин\n• Проветривание, меньше экранов\n\n"
+            f"{T['ru']['h60_t3']}:\n• Усиление симптомов\n• Высокая температура/«красные флаги»\n• Боль ≥7/10"
+        ),
+        "uk": (
+            f"{T['uk']['h60_t1']}:\n• Найімовірні побутові причини\n"
+            f"{T['uk']['h60_serious']}: • Виключити рідкісні, але серйозні стани при погіршенні\n\n"
+            f"{T['uk']['h60_t2']}:\n• Вода 300–500 мл\n• Відпочинок 15–20 хв\n• Провітрювання, менше екранів\n\n"
+            f"{T['uk']['h60_t3']}:\n• Посилення симптомів\n• Висока температура/«червоні прапорці»\n• Біль ≥7/10"
+        ),
+        "en": (
+            f"{T['en']['h60_t1']}:\n• Most likely everyday causes\n"
+            f"{T['en']['h60_serious']}: • Rule out rare but serious issues if worsening\n\n"
+            f"{T['en']['h60_t2']}:\n• Drink 300–500 ml water\n• 15–20 min rest\n• Ventilate, reduce screens\n\n"
+            f"{T['en']['h60_t3']}:\n• Worsening symptoms\n• High fever/red flags\n• Pain ≥7/10"
+        ),
+    }
+    fallback = fallback_map.get(lang, fallback_map["en"])
+
+    if not oai:
+        return fallback
+
+    sys = SYS_H60.replace("{lang}", lang)
+    user = {
+        "symptom": (symptom_text or "").strip()[:500],
+        "profile": {k: profile.get(k, "") for k in ["sex","age","goal","conditions","meds","sleep","activity","diet"]}
+    }
+    try:
+        resp = oai.chat.completions.create(
+            model=OPENAI_MODEL,
+            temperature=0.2,
+            max_tokens=420,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role":"system","content": sys},
+                {"role":"user","content": json.dumps(user, ensure_ascii=False)}
+            ]
+        )
+        data = json.loads(resp.choices[0].message.content.strip())
+        causes = _fmt_bullets(data.get("causes") or [])
+        serious = (data.get("serious") or "").strip()
+        do_now = _fmt_bullets(data.get("do_now") or [])
+        see_doc = _fmt_bullets(data.get("see_doctor") or [])
+
+        parts = []
+        if causes:
+            parts.append(f"{T[lang]['h60_t1']}:\n{causes}")
+        if serious:
+            parts.append(f"{T[lang]['h60_serious']}: {serious}")
+        if do_now:
+            parts.append(f"\n{T[lang]['h60_t2']}:\n{do_now}")
+        if see_doc:
+            parts.append(f"\n{T[lang]['h60_t3']}:\n{see_doc}")
+        return "\n".join(parts).strip()
+    except Exception as e:
+        logging.error(f"health60 LLM error: {e}")
+        return fallback
+
 # ------------- Commands & init -------------
 async def post_init(app):
     me = await app.bot.get_me()
@@ -976,6 +1074,13 @@ async def cmd_checkin_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                      "uk":"Щоденний чек-ін вимкнено.",
                                      "en":"Daily check-in disabled.",
                                      "es":"Check-in diario desactivado."}[lang])
+
+# новая команда Health60
+async def cmd_health60(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None))
+    sessions.setdefault(uid, {})["awaiting_h60"] = True
+    await update.message.reply_text(T[lang]["h60_intro"])
 
 # быстрые команды смены языка
 async def cmd_ru(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1130,6 +1235,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("act|"):
         parts = data.split("|")
         kind = parts[1]
+        if kind=="h60":
+            sessions.setdefault(uid,{})["awaiting_h60"] = True
+            await q.message.reply_text(T[lang]["h60_intro"])
+            return
         if kind=="rem":
             key = parts[2]
             hours = {"4h":4, "evening":6, "morning":16}.get(key,4)
@@ -1477,6 +1586,20 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sessions[uid]["awaiting_city"] = False
         await update.message.reply_text(T[lang]["thanks"]); return
 
+    # Health60 — ждём симптом
+    if sessions.get(uid, {}).get("awaiting_h60"):
+        sessions[uid]["awaiting_h60"] = False
+        prof = profiles_get(uid)
+        prefix = personalized_prefix(lang, prof)
+        plan = health60_make_plan(lang, text, prof)
+        msg = ((prefix + "\n") if prefix else "") + plan
+        await update.message.reply_text(msg, reply_markup=inline_actions(lang))
+        try:
+            await update.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
+        except Exception:
+            pass
+        return
+
     # свободный ответ для intake
     if sessions.get(uid, {}).get("p_wait_key"):
         key = sessions[uid]["p_wait_key"]; sessions[uid]["p_wait_key"] = None
@@ -1580,7 +1703,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prof = profiles_get(uid)
     data = llm_router_answer(text, lang, prof)
     prefix = personalized_prefix(lang, prof)
-    reply = ((prefix + "\n") if prefix else "") + (data.get("assistant_reply") or T[lang]["unknown"])
+        reply = ((prefix + "\n") if prefix else "") + (data.get("assistant_reply") or T[lang]["unknown"])
     await update.message.reply_text(reply, reply_markup=inline_actions(lang))
     try:
         await update.message.reply_text(T[lang]["ask_fb"], reply_markup=inline_feedback_kb(lang))
@@ -1588,132 +1711,118 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     for one in (data.get("followups") or [])[:2]:
         await send_unique(update.message, uid, one, force=True)
+    return
 
-# ------------- Number replies (0–10 typed) -------------
-async def on_number_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user; uid = user.id
-    text = update.message.text.strip()
-    try:
-        val = int(text)
-        if not (0 <= val <= 10):
-            return
-    except Exception:
-        return
-    lang = norm_lang(users_get(uid).get("lang") or getattr(user,"language_code",None))
-    s = sessions.get(uid, {})
-    if s.get("topic")=="pain" and s.get("step")==4:
-        s.setdefault("answers",{})["severity"] = val; s["step"] = 5
-        await update.message.reply_text(T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang,"painrf"))
-        return
-    ep = episode_find_open(uid)
-    if not ep:
-        await update.message.reply_text(T[lang]["thanks"]); return
-    eid = ep.get("episode_id"); episode_set(eid,"notes",f"checkin:{val}")
-    if val <= 3:
-        await update.message.reply_text(T[lang]["checkin_better"], reply_markup=inline_topic_kb(lang))
-        episode_set(eid,"status","resolved")
-    else:
-        await update.message.reply_text(T[lang]["checkin_worse"], reply_markup=inline_topic_kb(lang))
 
-# --------- Inline keyboards ---------
-def inline_topic_kb(lang:str) -> InlineKeyboardMarkup:
-    items = [
-        ("Pain","pain"),("Throat/Cold","throat"),("Sleep","sleep"),("Stress","stress"),
-        ("Digestion","digestion"),("Energy","energy"),
-        ("Nutrition","nutrition"),("Labs","labs"),("Habits","habits"),
-        ("Longevity","longevity"),("Profile","profile")
-    ]
-    by_lang = {
-        "ru":["Боль","Горло/простуда","Сон","Стресс","Пищеварение","Энергия","Питание","Анализы","Привычки","Долголетие","Профиль"],
-        "uk":["Біль","Горло/застуда","Сон","Стрес","Травлення","Енергія","Харчування","Аналізи","Звички","Довголіття","Профіль"],
-        "en":[x[0] for x in items],
-        "es":["Dolor","Garganta/Resfrío","Sueño","Estrés","Digestión","Energía","Nutrición","Análisis","Hábitos","Longevidad","Perfil"],
-    }[lang]
-    keys = [x[1] for x in items]
-    rows=[]; row=[]
-    for label,key in zip(by_lang, keys):
-        row.append(InlineKeyboardButton(label, callback_data=f"topic|{key}"))
-        if len(row)==3:
-            rows.append(row); row=[]
-    if row: rows.append(row)
-    return InlineKeyboardMarkup(rows)
-
-def inline_list(opts: List[str], prefix:str) -> InlineKeyboardMarkup:
-    rows=[]; row=[]
-    for i, label in enumerate(opts,1):
-        row.append(InlineKeyboardButton(label, callback_data=f"{prefix}|{label}"))
-        if len(row)==3:
-            rows.append(row); row=[]
-    if row: rows.append(row)
-    return InlineKeyboardMarkup(rows)
-
+# ---------- Inline keyboards ----------
 def inline_numbers_0_10() -> InlineKeyboardMarkup:
-    nums = [str(i) for i in range(0,11)]
-    rows = [
-        [InlineKeyboardButton(n, callback_data=f"num|{n}") for n in nums[:6]],
-        [InlineKeyboardButton(n, callback_data=f"num|{n}") for n in nums[6:]],
-        [InlineKeyboardButton("◀ Back", callback_data="pain|exit")]
-    ]
+    rows = []
+    row1 = [InlineKeyboardButton(str(n), callback_data=f"num|{n}") for n in range(0, 6)]
+    row2 = [InlineKeyboardButton(str(n), callback_data=f"num|{n}") for n in range(6, 11)]
+    rows.append(row1)
+    rows.append(row2)
+    rows.append([InlineKeyboardButton("◀", callback_data="pain|exit")])
     return InlineKeyboardMarkup(rows)
 
-def inline_accept(lang:str) -> InlineKeyboardMarkup:
-    labels = T[lang]["accept_opts"]
-    return InlineKeyboardMarkup([[InlineKeyboardButton(labels[0],callback_data="acc|yes"),
-                                  InlineKeyboardButton(labels[1],callback_data="acc|later"),
-                                  InlineKeyboardButton(labels[2],callback_data="acc|no")]])
-
-def inline_remind(lang:str) -> InlineKeyboardMarkup:
-    labs = T[lang]["remind_opts"]; keys = ["4h","evening","morning","none"]
-    rows=[[InlineKeyboardButton(labs[i], callback_data=f"rem|{keys[i]}") for i in range(4)]]
+def inline_list(options: List[str], prefix: str) -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for opt in options:
+        row.append(InlineKeyboardButton(opt, callback_data=f"{prefix}|{opt}"))
+        if len(row) == 3:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
     return InlineKeyboardMarkup(rows)
 
-def inline_actions(lang:str) -> InlineKeyboardMarkup:
+def inline_topic_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(T[lang]["act_rem_4h"], callback_data="act|rem|4h"),
+        [InlineKeyboardButton("🩺 Pain", callback_data="topic|pain"),
+         InlineKeyboardButton("😴 Sleep", callback_data="topic|sleep"),
+         InlineKeyboardButton("🍎 Nutrition", callback_data="topic|nutrition")],
+        [InlineKeyboardButton("🧪 Labs", callback_data="topic|labs"),
+         InlineKeyboardButton("🔁 Habits", callback_data="topic|habits"),
+         InlineKeyboardButton("🧬 Longevity", callback_data="topic|longevity")],
+        [InlineKeyboardButton("👤 Profile", callback_data="topic|profile")]
+    ])
+
+def inline_accept(lang: str) -> InlineKeyboardMarkup:
+    labels = T[lang]["accept_opts"]
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(labels[0], callback_data="acc|yes"),
+         InlineKeyboardButton(labels[1], callback_data="acc|later"),
+         InlineKeyboardButton(labels[2], callback_data="acc|no")]
+    ])
+
+def inline_remind(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(T[lang]["act_rem_4h"], callback_data="rem|4h")],
+        [InlineKeyboardButton(T[lang]["act_rem_eve"], callback_data="rem|evening")],
+        [InlineKeyboardButton(T[lang]["act_rem_morn"], callback_data="rem|morning")]
+    ])
+
+def inline_feedback_kb(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(T[lang]["fb_good"], callback_data="fb|up"),
+         InlineKeyboardButton(T[lang]["fb_bad"],  callback_data="fb|down")],
+        [InlineKeyboardButton(T[lang]["fb_free"], callback_data="fb|text")]
+    ])
+
+def inline_actions(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(T[lang]["act_rem_4h"],  callback_data="act|rem|4h"),
          InlineKeyboardButton(T[lang]["act_rem_eve"], callback_data="act|rem|evening"),
-         InlineKeyboardButton(T[lang]["act_rem_morn"], callback_data="act|rem|morning")],
+         InlineKeyboardButton(T[lang]["act_rem_morn"],callback_data="act|rem|morning")],
         [InlineKeyboardButton(T[lang]["act_save_episode"], callback_data="act|save")],
+        [InlineKeyboardButton(T[lang]["h60_btn"], callback_data="act|h60")],
         [InlineKeyboardButton(T[lang]["act_ex_neck"], callback_data="act|ex|neck")],
         [InlineKeyboardButton(T[lang]["act_find_lab"], callback_data="act|lab")],
         [InlineKeyboardButton(T[lang]["act_er"], callback_data="act|er")]
     ])
 
-def inline_feedback_kb(lang:str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(T[lang]["fb_good"], callback_data="fb|up"),
-         InlineKeyboardButton(T[lang]["fb_bad"], callback_data="fb|down"),
-         InlineKeyboardButton(T[lang]["fb_free"], callback_data="fb|text")]
-    ])
 
-# ------------- App init -------------
-def main():
-    if not TELEGRAM_TOKEN:
-        raise RuntimeError("TELEGRAM_TOKEN is not set")
+# ---------- Main / wiring ----------
+def build_app() -> "Application":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
-    schedule_from_sheet_on_start(app)
+    # Commands
+    app.add_handler(CommandHandler("start",        cmd_start))
+    app.add_handler(CommandHandler("help",         cmd_help))
+    app.add_handler(CommandHandler("privacy",      cmd_privacy))
+    app.add_handler(CommandHandler("pause",        cmd_pause))
+    app.add_handler(CommandHandler("resume",       cmd_resume))
+    app.add_handler(CommandHandler("delete_data",  cmd_delete_data))
+    app.add_handler(CommandHandler("profile",      cmd_profile))
+    app.add_handler(CommandHandler("settz",        cmd_settz))
+    app.add_handler(CommandHandler("checkin_on",   cmd_checkin_on))
+    app.add_handler(CommandHandler("checkin_off",  cmd_checkin_off))
+    app.add_handler(CommandHandler("health60",     cmd_health60))
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("privacy", cmd_privacy))
-    app.add_handler(CommandHandler("pause", cmd_pause))
-    app.add_handler(CommandHandler("resume", cmd_resume))
-    app.add_handler(CommandHandler("delete_data", cmd_delete_data))
-    app.add_handler(CommandHandler("profile", cmd_profile))
-    app.add_handler(CommandHandler("settz", cmd_settz))
-    app.add_handler(CommandHandler("checkin_on", cmd_checkin_on))
-    app.add_handler(CommandHandler("checkin_off", cmd_checkin_off))
+    # Quick language toggles
     app.add_handler(CommandHandler("ru", cmd_ru))
     app.add_handler(CommandHandler("en", cmd_en))
     app.add_handler(CommandHandler("uk", cmd_uk))
     app.add_handler(CommandHandler("es", cmd_es))
 
+    # Callbacks & text
     app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.Regex(r"^(?:[0-9]|10)$"), on_number_reply))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
-    logging.info(f"SHEETS_ENABLED={SHEETS_ENABLED}")
-    app.run_polling()
+    return app
+
 
 if __name__ == "__main__":
-    main()
+    if not TELEGRAM_TOKEN:
+        logging.error("TELEGRAM_TOKEN is not set")
+        raise SystemExit(1)
+
+    application = build_app()
+
+    # Restore scheduled jobs from Sheets/memory (if any)
+    try:
+        schedule_from_sheet_on_start(application)
+    except Exception as e:
+        logging.warning(f"Scheduling restore failed: {e}")
+
+    logging.info("Starting TendAI bot polling…")
+    application.run_polling()
+
