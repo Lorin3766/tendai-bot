@@ -303,6 +303,71 @@ def profile_is_incomplete(profile_row: dict) -> bool:
     keys = ["sex","age","goal"]
     return sum(1 for k in keys if str(profile_row.get(k) or "").strip()) < 2
 
+# ===== ONBOARDING GATE (Скрыть меню до опроса) =====
+GATE_FLAG_KEY = "menu_unlocked"
+
+def _is_menu_unlocked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Разрешено ли показывать большое меню."""
+    if context.user_data.get(GATE_FLAG_KEY):
+        return True
+    prof = profiles_get(update.effective_user.id) or {}
+    return not profile_is_incomplete(prof)
+
+async def gate_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать экран-«шторку»: пройти опрос или открыть меню позже."""
+    lang = context.user_data.get("lang", "en")
+    kb = [
+        [InlineKeyboardButton("🧩 Пройти опрос (40–60 сек)" if lang!="en" else "🧩 Take the 40–60s intake", callback_data="ipro:start")],
+        [InlineKeyboardButton("➡️ Позже — показать меню" if lang!="en" else "➡️ Later — open menu", callback_data="gate:skip")],
+    ]
+    text = (
+        "Чтобы советы были точнее, пройдите короткий опрос. Можно пропустить и сделать позже."
+        if lang!="en" else
+        "To personalize answers, please take a short intake. You can skip and do it later."
+    )
+    await update.effective_chat.send_message(text, reply_markup=InlineKeyboardMarkup(kb))
+
+async def gate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопки 'Позже — показать меню'."""
+    q = update.callback_query
+    await q.answer()
+    if q.data == "gate:skip":
+        context.user_data[GATE_FLAG_KEY] = True
+        await q.edit_message_text("Ок, открываю меню…" if context.user_data.get("lang","en")!="en" else "OK, opening the menu…")
+        # Попробуем вызвать внешний рендер меню (если приложение его предоставило)
+        render_cb = context.application.bot_data.get("render_menu_cb")
+        if callable(render_cb):
+            await render_cb(update, context)
+        else:
+            # fallback — повторный старт
+            await context.application.bot.send_message(q.message.chat_id, "/start")
+
+# Этот хендлер нужно зарегистрировать после создания app:
+# app.add_handler(CallbackQueryHandler(gate_cb, pattern=r"^gate:"))
+
+# Колбэк, который вызовет PRO-опросник после шага 6/6: сохраняем профиль и открываем меню
+async def _ipro_save_to_sheets_and_open_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, profile: dict):
+    uid = update.effective_user.id
+    # Пишем в Profiles (минимально необходимые поля)
+    profiles_upsert(uid, {
+        "sex": profile.get("sex") or "",
+        "age": profile.get("age") or "",
+        "goal": profile.get("goal") or "",
+        "conditions": ", ".join(sorted(profile.get("chronic", []))) if isinstance(profile.get("chronic"), set) else (profile.get("chronic") or ""),
+        "meds": profile.get("meds") or "",
+        "activity": profile.get("hab_activity") or "",
+        "sleep": profile.get("hab_sleep") or "",
+        "notes": ", ".join(sorted(profile.get("complaints", []))) if isinstance(profile.get("complaints"), set) else (profile.get("complaints") or ""),
+    })
+    # Разблокируем меню и показываем его
+    context.user_data[GATE_FLAG_KEY] = True
+    render_cb = context.application.bot_data.get("render_menu_cb")
+    if callable(render_cb):
+        await render_cb(update, context)
+    else:
+        await context.application.bot.send_message(update.effective_chat.id, "/start")
+# ===== /ONBOARDING GATE =====
+
 # ---------- Anti-duplicate questions ----------
 def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, (a or "").lower(), (b or "").lower()).ratio()
