@@ -1,214 +1,221 @@
 # -*- coding: utf-8 -*-
-from typing import Optional, Set, Dict
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update
-from telegram.ext import CallbackQueryHandler, ContextTypes
+# Minimal PRO intake (6 steps): sex, age, goal, chronic, meds, sleep
+# Exports:
+#   - intake_entry_button(label: str|None) -> InlineKeyboardButton
+#   - register_intake_pro(app, gclient=None, ws_profiles=None, on_complete_cb=None)
 
-# -------- Публичный API модуля --------
-def register_intake_pro(application, gspread_client=None, spreadsheet_id: Optional[str] = None, on_finish=None) -> None:
-    """
-    Регистрирует хендлеры ПРО-опросника в приложении PTB.
-    - gspread_client / spreadsheet_id — просто сохраняются в bot_data (на будущее / для совместимости).
-    - on_finish: async-колбэк вида (update, context, profile_dict) — вызывается по завершении шага 6/6.
-    """
-    application.bot_data["ipro_on_finish"] = on_finish
-    application.bot_data["ipro_gs"] = {"gclient": gspread_client, "spreadsheet_id": spreadsheet_id}
+from typing import List, Tuple, Optional, Dict, Any, Callable
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import ContextTypes, CallbackQueryHandler, MessageHandler, filters
 
-    # Один компактный CallbackQueryHandler на весь опросник:
-    application.add_handler(CallbackQueryHandler(_ipro_cb, pattern=r"^intake:"))
-
-def intake_entry_button(text: str = "🙏 Опросник (6 пунктов)") -> InlineKeyboardButton:
-    """Кнопка для запуска опросника из любого меню/интерфейса."""
-    return InlineKeyboardButton(text, callback_data="intake:start")
-
-
-# -------- Локализация (минимально необходимая) --------
-_I18N = {
-    "en": {
-        "intro": "Quick 6-step intake to tailor your advice.",
-        "step1": "Step 1/6. Sex:",
-        "step2": "Step 2/6. Age:",
-        "step3": "Step 3/6. Main goal:",
-        "step4": "Step 4/6. Chronic conditions (toggle, then Next):",
-        "step5": "Step 5/6. Sleep pattern:",
-        "step6": "Step 6/6. Activity level:",
-        "next": "Next",
-        "skip": "Skip",
-        "back": "◀ Back",
-        "done": "Finish",
-        "saved": "Saved profile.",
-        "sex_opts": [("Male", "male"), ("Female", "female"), ("Other", "other")],
-        "age_opts": [("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
-        "goal_opts": [("Weight","weight"),("Energy","energy"),("Sleep","sleep"),("Longevity","longevity"),("Strength","strength")],
-        "chronic_opts": [("None","none"),("Hypertension","hypertension"),("Diabetes","diabetes"),("Thyroid","thyroid"),("Other","other")],
-        "sleep_opts": [("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")],
-        "activity_opts": [("<5k steps","<5k"),("5–8k","5-8k"),("8–12k","8-12k"),("Regular sport","sport")],
-    },
-    "ru": {
-        "intro": "Короткий опрос из 6 шагов, чтобы советы были точнее.",
-        "step1": "Шаг 1/6. Пол:",
-        "step2": "Шаг 2/6. Возраст:",
-        "step3": "Шаг 3/6. Главная цель:",
-        "step4": "Шаг 4/6. Хронические болезни (выбирайте/отменяйте, затем «Далее»):",
-        "step5": "Шаг 5/6. Режим сна:",
-        "step6": "Шаг 6/6. Уровень активности:",
-        "next": "Далее",
-        "skip": "Пропустить",
-        "back": "◀ Назад",
-        "done": "Завершить",
-        "saved": "Профиль сохранён.",
-        "sex_opts": [("Мужской","male"),("Женский","female"),("Другое","other")],
-        "age_opts": [("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
-        "goal_opts": [("Похудение","weight"),("Энергия","energy"),("Сон","sleep"),("Долголетие","longevity"),("Сила","strength")],
-        "chronic_opts": [("Нет","none"),("Гипертония","hypertension"),("Диабет","diabetes"),("Щитовидка","thyroid"),("Другое","other")],
-        "sleep_opts": [("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
-        "activity_opts": [("<5к шагов","<5k"),("5–8к","5-8k"),("8–12к","8-12k"),("Спорт регулярно","sport")],
-    }
-}
-
+# ---- i18n helpers ----
 def _lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-    # Пытаемся взять язык из user_data, иначе — из Telegram, дефолт 'en'
-    l = (context.user_data.get("lang")
-         or (getattr(update.effective_user, "language_code", None) or "en").split("-")[0].lower())
-    return "ru" if l in ("ru","uk","be","kk") else "en"
+    # пробуем из user_data, иначе код Telegram
+    return (context.user_data.get("lang")
+            or getattr(update.effective_user, "language_code", "en").split("-")[0]
+            or "en")
 
+def _t(lang: str, key: str) -> str:
+    RU = {
+        "title": "Быстрый опрос (6 шагов). Можно выбрать кнопкой или написать свой ответ.",
+        "write": "✍️ Написать",
+        "skip": "⏭️ Пропустить",
+        "done": "Готово! Сохраняю профиль…",
+        "steps": [
+            "Шаг 1/6. Пол:",
+            "Шаг 2/6. Возраст:",
+            "Шаг 3/6. Главная цель:",
+            "Шаг 4/6. Хронические болезни:",
+            "Шаг 5/6. Лекарства/добавки/аллергии:",
+            "Шаг 6/6. Сон (отбой/подъём, напр. 23:30/07:00):",
+        ]
+    }
+    EN = {
+        "title": "Quick intake (6 steps). Use buttons or type your answer.",
+        "write": "✍️ Write",
+        "skip": "⏭️ Skip",
+        "done": "Done! Saving your profile…",
+        "steps": [
+            "Step 1/6. Sex:",
+            "Step 2/6. Age:",
+            "Step 3/6. Main goal:",
+            "Step 4/6. Chronic conditions:",
+            "Step 5/6. Meds/supplements/allergies:",
+            "Step 6/6. Sleep (bed/wake, e.g., 23:30/07:00):",
+        ]
+    }
+    data = RU if lang != "en" else EN
+    if key == "steps":
+        return data["steps"]
+    return data.get(key, key)
 
-# --------- Рендеры клавиатур ---------
-def _kb_from_pairs(prefix: str, pairs, per_row: int = 3) -> InlineKeyboardMarkup:
+# ---- steps & options ----
+Step = Dict[str, Any]
+_STEPS: List[Step] = [
+    {"key":"sex","opts":{
+        "ru":[("Мужской","male"),("Женский","female"),("Другое","other")],
+        "en":[("Male","male"),("Female","female"),("Other","other")],
+    }},
+    {"key":"age","opts":{
+        "ru":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
+        "en":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
+    }},
+    {"key":"goal","opts":{
+        "ru":[("Похудение","weight"),("Энергия","energy"),("Сон","sleep"),("Долголетие","longevity"),("Сила","strength")],
+        "en":[("Weight","weight"),("Energy","energy"),("Sleep","sleep"),("Longevity","longevity"),("Strength","strength")],
+    }},
+    {"key":"chronic","opts":{
+        "ru":[("Нет","none"),("Гипертония","hypertension"),("Диабет","diabetes"),("Щитовидка","thyroid"),("Другое","other")],
+        "en":[("None","none"),("Hypertension","hypertension"),("Diabetes","diabetes"),("Thyroid","thyroid"),("Other","other")],
+    }},
+    {"key":"meds","opts":{
+        "ru":[("Нет","none"),("Магний","magnesium"),("Витамин D","vitd"),("Аллергии есть","allergies"),("Другое","other")],
+        "en":[("None","none"),("Magnesium","magnesium"),("Vitamin D","vitd"),("Allergies","allergies"),("Other","other")],
+    }},
+    {"key":"sleep","opts":{
+        "ru":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
+        "en":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")],
+    }},
+]
+
+# ---- public helpers ----
+def intake_entry_button(label: Optional[str] = None) -> InlineKeyboardButton:
+    return InlineKeyboardButton(label or "🧩 Intake (6-step)", callback_data="ipro:start")
+
+def register_intake_pro(app, gclient=None, ws_profiles=None, on_complete_cb: Optional[Callable]=None):
+    # сохраним зависимости в bot_data
+    app.bot_data.setdefault("ipro_cfg", {})
+    app.bot_data["ipro_cfg"].update({
+        "gclient": gclient,
+        "ws_profiles": ws_profiles,
+        "on_complete_cb": on_complete_cb,
+    })
+
+    app.add_handler(CallbackQueryHandler(_ipro_cb, pattern=r"^ipro:"))
+    # текстовый ввод используем ТОЛЬКО когда ждём свободный ответ
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _ipro_text), group=1)
+
+# ---- internals ----
+def _kb_for_step(lang: str, key: str, opts: List[Tuple[str,str]]) -> InlineKeyboardMarkup:
     rows, row = [], []
-    for text, val in pairs:
-        row.append(InlineKeyboardButton(text, callback_data=f"intake:{prefix}:{val}"))
-        if len(row) == per_row:
+    for label, val in opts:
+        row.append(InlineKeyboardButton(label, callback_data=f"ipro:choose|{key}|{val}"))
+        if len(row) == 3:
             rows.append(row); row = []
-    if row: rows.append(row)
+    if row:
+        rows.append(row)
+    rows.append([
+        InlineKeyboardButton(_t(lang,"write"), callback_data=f"ipro:write|{key}"),
+        InlineKeyboardButton(_t(lang,"skip"),  callback_data=f"ipro:skip|{key}"),
+    ])
     return InlineKeyboardMarkup(rows)
 
-def _kb_chronic(lang: str, selected: Set[str]) -> InlineKeyboardMarkup:
-    labels = _I18N[lang]["chronic_opts"]
-    rows, row = [], []
-    for text, val in labels:
-        mark = "✅ " if val in selected else ""
-        row.append(InlineKeyboardButton(mark + text, callback_data=f"intake:chronic:toggle:{val}"))
-        if len(row) == 2:
-            rows.append(row); row = []
-    if row: rows.append(row)
-    rows.append([InlineKeyboardButton(_I18N[lang]["next"], callback_data="intake:chronic:next"),
-                 InlineKeyboardButton(_I18N[lang]["skip"], callback_data="intake:chronic:skip")])
-    return InlineKeyboardMarkup(rows)
+async def _send_step(update: Update, context: ContextTypes.DEFAULT_TYPE, idx: int):
+    lang = _lang(update, context)
+    steps_titles = _t(lang, "steps")
+    step = _STEPS[idx]
+    kb = _kb_for_step(lang, step["key"], step["opts"]["ru" if lang!="en" else "en"])
+    msg = steps_titles[idx]
+    await _reply(update, context, msg, kb)
 
+async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, kb: Optional[InlineKeyboardMarkup]=None):
+    if update.callback_query:
+        await update.callback_query.message.reply_text(text, reply_markup=kb or ReplyKeyboardRemove())
+    else:
+        await update.message.reply_text(text, reply_markup=kb or ReplyKeyboardRemove())
 
-# --------- Основной Callback опросника ---------
 async def _ipro_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    data = q.data  # "intake:...."
+    data = q.data or ""
+
+    if data == "ipro:start":
+        context.user_data["ipro"] = {"idx": 0, "answers": {}, "wait_key": None}
+        lang = _lang(update, context)
+        await q.message.reply_text(_t(lang, "title"))
+        await _send_step(update, context, 0)
+        return
+
+    ud = context.user_data.get("ipro") or {}
+    idx = ud.get("idx", 0)
+    if not ud:
+        return
+
+    if data.startswith("ipro:choose|"):
+        _, _, key, val = data.split("|", 3)
+        ud["answers"][key] = val
+        context.user_data["ipro"] = ud
+        await _advance(update, context)
+        return
+
+    if data.startswith("ipro:write|"):
+        _, _, key = data.split("|", 2)
+        ud["wait_key"] = key
+        context.user_data["ipro"] = ud
+        lang = _lang(update, context)
+        await q.message.reply_text("Напишите короткий ответ:" if lang!="en" else "Type your answer:")
+        return
+
+    if data.startswith("ipro:skip|"):
+        _, _, key = data.split("|", 2)
+        ud["answers"].setdefault(key, "")
+        context.user_data["ipro"] = ud
+        await _advance(update, context)
+        return
+
+async def _ipro_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ud = context.user_data.get("ipro")
+    if not ud or not ud.get("wait_key"):
+        # не наша ситуация — пропускаем для других хендлеров
+        return
+    key = ud["wait_key"]; ud["wait_key"] = None
+    val = (update.message.text or "").strip()
+    if key == "age":
+        # вытащим 2 цифры, если есть
+        import re
+        m = re.search(r"\d{2}", val)
+        if m:
+            val = m.group(0)
+    ud["answers"][key] = val
+    context.user_data["ipro"] = ud
+    await _advance(update, context)
+
+async def _advance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ud = context.user_data.get("ipro") or {}
+    idx = ud.get("idx", 0) + 1
+    ud["idx"] = idx
+    context.user_data["ipro"] = ud
+
+    if idx < len(_STEPS):
+        await _send_step(update, context, idx)
+        return
+
+    # Готово — соберём профиль и передадим наверх
     lang = _lang(update, context)
-    t = _I18N[lang]
+    await _reply(update, context, _t(lang, "done"))
 
-    # Состояние опросника у пользователя
-    st: Dict = context.user_data.setdefault("ipro", {
-        "step": 0,
-        "sex": "",
-        "age": "",
-        "goal": "",
-        "chronic": set(),   # type: ignore
-        "hab_sleep": "",
-        "hab_activity": "",
-        "meds": "",         # отдельным шагом не собираем, пусть будет пустым
-        "complaints": set() # зарезервировано
-    })
-    # Исправляем тип (после рестарта может восстановиться как list)
-    if not isinstance(st.get("chronic"), set):
-        st["chronic"] = set(st.get("chronic") or [])
+    answers = ud.get("answers", {})
+    # приводим к ключам, которые ждёт main.py
+    profile = {
+        "sex": answers.get("sex",""),
+        "age": answers.get("age",""),
+        "goal": answers.get("goal",""),
+        "chronic": answers.get("chronic",""),
+        "meds": answers.get("meds",""),
+        "hab_sleep": answers.get("sleep",""),
+        "hab_activity": "",   # в этой миниверсии нет отдельного шага
+        "complaints": set(),  # пусто
+    }
 
-    # --- Старт ---
-    if data == "intake:start":
-        st.update({"step": 1, "sex":"", "age":"", "goal":"", "chronic": set(),
-                   "hab_sleep":"", "hab_activity":"", "meds":"", "complaints": set()})
-        await q.message.reply_text(t["intro"])
-        await q.message.reply_text(t["step1"], reply_markup=_kb_from_pairs("sex", t["sex_opts"], per_row=3))
-        return
-
-    # --- Шаг 1: Пол ---
-    if data.startswith("intake:sex:"):
-        st["sex"] = data.split(":")[-1]
-        st["step"] = 2
-        await q.message.reply_text(t["step2"], reply_markup=_kb_from_pairs("age", t["age_opts"], per_row=3))
-        return
-
-    # --- Шаг 2: Возраст ---
-    if data.startswith("intake:age:"):
-        st["age"] = data.split(":")[-1]
-        st["step"] = 3
-        await q.message.reply_text(t["step3"], reply_markup=_kb_from_pairs("goal", t["goal_opts"], per_row=3))
-        return
-
-    # --- Шаг 3: Цель ---
-    if data.startswith("intake:goal:"):
-        st["goal"] = data.split(":")[-1]
-        st["step"] = 4
-        await q.message.reply_text(t["step4"], reply_markup=_kb_chronic(lang, st["chronic"]))
-        return
-
-    # --- Шаг 4: Хронические (мультивыбор) ---
-    if data.startswith("intake:chronic:toggle:"):
-        key = data.split(":")[-1]
-        sel: Set[str] = st["chronic"]
-        if key in sel:
-            sel.remove(key)
-        else:
-            # Если выбрали "none", снимаем всё остальное
-            if key in ("none",):
-                sel.clear()
-            sel.add(key)
-            # Если выбрали что-то кроме "none" — убрать "none"
-            if key != "none" and "none" in sel:
-                sel.remove("none")
-        await q.edit_message_reply_markup(reply_markup=_kb_chronic(lang, sel))
-        return
-
-    if data == "intake:chronic:skip" or data == "intake:chronic:next":
-        st["step"] = 5
-        await q.message.reply_text(t["step5"], reply_markup=_kb_from_pairs("sleep", t["sleep_opts"], per_row=2))
-        return
-
-    # --- Шаг 5: Сон ---
-    if data.startswith("intake:sleep:"):
-        st["hab_sleep"] = data.split(":")[-1]
-        st["step"] = 6
-        await q.message.reply_text(t["step6"], reply_markup=_kb_from_pairs("activity", t["activity_opts"], per_row=2))
-        return
-
-    # --- Шаг 6: Активность -> финал ---
-    if data.startswith("intake:activity:"):
-        st["hab_activity"] = data.split(":")[-1]
-        st["step"] = 7  # финальное внутреннее состояние
-
-        # Подготовим профиль в удобном виде
-        profile = {
-            "sex": st.get("sex", ""),
-            "age": st.get("age", ""),
-            "goal": st.get("goal", ""),
-            "chronic": set(st.get("chronic") or []),
-            "meds": st.get("meds", ""),
-            "hab_sleep": st.get("hab_sleep", ""),
-            "hab_activity": st.get("hab_activity", ""),
-            "complaints": set(st.get("complaints") or []),
-        }
-
-        # Колбэк, переданный хозяином приложения (main.py)
-        on_finish = update.get_bot().bot_data.get("ipro_on_finish")
-        if callable(on_finish):
-            try:
-                await on_finish(update, context, profile)
-            except Exception:
-                # Мягко деградируем: просто покажем “сохранено”
-                await q.message.reply_text(t["saved"])
-        else:
-            await q.message.reply_text(t["saved"])
-
-        # Очистим state
+    cfg = context.application.bot_data.get("ipro_cfg") or {}
+    on_done = cfg.get("on_complete_cb")
+    if callable(on_done):
         try:
-            context.user_data.pop("ipro", None)
-        except Exception:
-            pass
-        return
+            await on_done(update, context, profile)
+        except Exception as e:
+            # не падаем из-за внешнего кода
+            import logging
+            logging.error(f"ipro on_complete_cb error: {e}")
+
+    # очистим состояние
+    context.user_data["ipro"] = {}
