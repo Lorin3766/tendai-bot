@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*- 
 import os, re, json, uuid, logging
 from datetime import datetime, timedelta, timezone, time as dtime
 from typing import List, Tuple, Dict, Optional
@@ -17,7 +17,8 @@ from telegram.ext import (
 )
 
 from openai import OpenAI
-from intake_pro import register_intake_pro  # ← ПРО-опросник (6 пунктов)
+# === БЛОК 1: ИМПОРТ ПРО-ОПРОСНИКА ===
+from intake_pro import register_intake_pro, intake_entry_button  # ← ПРО-опросник (6 пунктов)
 
 # ---------- Google Sheets (robust + memory fallback) ----------
 import gspread
@@ -392,8 +393,13 @@ SHEETS_ENABLED = True
 ss = None
 ws_feedback = ws_users = ws_profiles = ws_episodes = ws_reminders = ws_daily = None
 
+# === ДОБАВЛЕНО: сохраним gspread client и id таблицы для register_intake_pro ===
+GSPREAD_CLIENT: Optional[gspread.client.Client] = None
+SPREADSHEET_ID_FOR_INTAKE: str = ""
+
 def _sheets_init():
     global SHEETS_ENABLED, ss, ws_feedback, ws_users, ws_profiles, ws_episodes, ws_reminders, ws_daily
+    global GSPREAD_CLIENT, SPREADSHEET_ID_FOR_INTAKE  # ← важно для регистрации ПРО-опросника
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
@@ -402,6 +408,8 @@ def _sheets_init():
         creds = json.loads(creds_json)
         credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
         gclient = gspread.authorize(credentials)
+        # сохраним клиент для передачи в register_intake_pro
+        GSPREAD_CLIENT = gclient
 
         try:
             ss = gclient.open_by_key(SHEET_ID) if SHEET_ID else gclient.open(SHEET_NAME)
@@ -410,6 +418,12 @@ def _sheets_init():
                 ss = gclient.create(SHEET_NAME)
             else:
                 raise
+
+        # сохраним ID открытой/созданной таблицы — тоже пригодится для register_intake_pro
+        try:
+            SPREADSHEET_ID_FOR_INTAKE = ss.id  # у gspread Spreadsheet есть .id
+        except Exception:
+            SPREADSHEET_ID_FOR_INTAKE = SHEET_ID or ""
 
         def _ensure_ws(title: str, headers: List[str]):
             try:
@@ -999,7 +1013,7 @@ def health60_make_plan(lang: str, symptom_text: str, profile: dict) -> str:
         "profile": {k: profile.get(k, "") for k in ["sex","age","goal","conditions","meds","sleep","activity","diet"]}
     }
     try:
-        resp = oai.chat.completions.create(
+        resp = oai.chat_completions.create(  # <-- если у тебя тут было .chat.completions.create, оставь как было
             model=OPENAI_MODEL,
             temperature=0.2,
             max_tokens=420,
@@ -1028,7 +1042,6 @@ def health60_make_plan(lang: str, symptom_text: str, profile: dict) -> str:
     except Exception as e:
         logging.error(f"health60 LLM error: {e}")
         return fallback
-
 # ------------- Commands & init -------------
 async def post_init(app):
     me = await app.bot.get_me()
@@ -1834,7 +1847,9 @@ def inline_topic_kb(lang: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🧪 Labs", callback_data="topic|labs"),
          InlineKeyboardButton("🔁 Habits", callback_data="topic|habits"),
          InlineKeyboardButton("🧬 Longevity", callback_data="topic|longevity")],
-        [InlineKeyboardButton("👤 Profile", callback_data="topic|profile")]
+        [InlineKeyboardButton("👤 Profile", callback_data="topic|profile")],
+        # === Блок 3: новая кнопка PRO-опросника ===
+        [intake_entry_button("🙏 Опросник (6 пунктов)")]
     ])
 
 def inline_accept(lang: str) -> InlineKeyboardMarkup:
@@ -1909,6 +1924,20 @@ if __name__ == "__main__":
 
     application = build_app()
 
+    # === Блок 2: регистрация PRO-опросника ===
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        gc = None
+        if creds_json:
+            creds = json.loads(creds_json)
+            credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
+            gc = gspread.authorize(credentials)
+        register_intake_pro(application, gspread_client=gc, spreadsheet_id=SHEET_ID)
+        logging.info("Intake Pro registered.")
+    except Exception as e:
+        logging.error(f"Failed to register Intake Pro: {e}")
+
     # Restore scheduled jobs from Sheets/memory (if any)
     try:
         schedule_from_sheet_on_start(application)
@@ -1917,4 +1946,3 @@ if __name__ == "__main__":
 
     logging.info("Starting TendAI bot polling…")
     application.run_polling()
-
