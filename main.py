@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*- 
+# -*- coding: utf-8 -*-
 import os, re, json, uuid, logging
 from datetime import datetime, timedelta, timezone, time as dtime
 from typing import List, Tuple, Dict, Optional
@@ -17,8 +17,9 @@ from telegram.ext import (
 )
 
 from openai import OpenAI
-# === БЛОК 1: ИМПОРТ ПРО-ОПРОСНИКА ===
-from intake_pro import register_intake_pro, intake_entry_button  # ← ПРО-опросник (6 пунктов)
+# === PRO-INTAKE ===
+# импортируем только регистрацию (кнопку дадим сами через InlineKeyboardButton)
+from intake_pro import register_intake_pro
 
 # ---------- Google Sheets (robust + memory fallback) ----------
 import gspread
@@ -158,7 +159,7 @@ T = {
         "saved_profile":"Сохранил: ",
         "start_where":"С чего начнём? (симптом/сон/питание/анализы/привычки/долголетие)",
         "daily_gm":"Доброе утро! Быстрый чек-ин:",
-        "mood_good":"😃 Хорошо","mood_ok":"😐 Нормально","mood_bad":"😣 Плохо","мood_note":"✍️ Комментарий",
+        "mood_good":"😃 Хорошо","mood_ok":"😐 Нормально","mood_bad":"😣 Плохо","mood_note":"✍️ Комментарий",
         "mood_thanks":"Спасибо! Хорошего дня 👋",
         "triage_pain_q1":"Где болит?",
         "triage_pain_q1_opts":["Голова","Горло","Спина","Живот","Другое"],
@@ -208,7 +209,7 @@ T = {
     },
     "uk": {
         "welcome":"Привіт! Я TendAI — асистент здоров’я та довголіття.\nРозкажи, що турбує; я підкажу. Спершу швидкий опитник (~40с) для точніших порад.",
-        "help":"Короткі перевірки, план на 24–48 год, нагадування, щоденні чек-іни.\nКоманди: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /health60 /ру /uk /en /es",
+        "help":"Короткі перевірки, план на 24–48 год, нагадування, щоденні чек-іни.\nКоманди: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /health60 /ru /uk /en /es",
         "privacy":"TendAI не замінює лікаря. Зберігаємо мінімум даних для нагадувань. /delete_data — видалити.",
         "paused_on":"Нагадування призупинені. /resume — увімкнути.",
         "paused_off":"Нагадування знову увімкнені.",
@@ -318,7 +319,7 @@ async def gate_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать экран-«шторку»: пройти опрос или открыть меню позже."""
     lang = context.user_data.get("lang", "en")
     kb = [
-        [InlineKeyboardButton("🧩 Пройти опрос (40–60 сек)" if lang!="en" else "🧩 Take the 40–60s intake", callback_data="ipro:start")],
+        [InlineKeyboardButton("🧩 Пройти опрос (40–60 сек)" if lang!="en" else "🧩 Take the 40–60s intake", callback_data="intake:start")],
         [InlineKeyboardButton("➡️ Позже — показать меню" if lang!="en" else "➡️ Later — open menu", callback_data="gate:skip")],
     ]
     text = (
@@ -343,8 +344,7 @@ async def gate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # fallback — повторный старт
             await context.application.bot.send_message(q.message.chat_id, "/start")
 
-# Этот хендлер нужно зарегистрировать после создания app:
-# app.add_handler(CallbackQueryHandler(gate_cb, pattern=r"^gate:"))
+# Этот хендлер мы зарегистрируем вместе с остальными (pattern="^gate:")
 
 # Колбэк, который вызовет PRO-опросник после шага 6/6: сохраняем профиль и открываем меню
 async def _ipro_save_to_sheets_and_open_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, profile: dict):
@@ -393,13 +393,13 @@ SHEETS_ENABLED = True
 ss = None
 ws_feedback = ws_users = ws_profiles = ws_episodes = ws_reminders = ws_daily = None
 
-# === ДОБАВЛЕНО: сохраним gspread client и id таблицы для register_intake_pro ===
+# === Сохраняем gspread client и id таблицы для register_intake_pro ===
 GSPREAD_CLIENT: Optional[gspread.client.Client] = None
 SPREADSHEET_ID_FOR_INTAKE: str = ""
 
 def _sheets_init():
     global SHEETS_ENABLED, ss, ws_feedback, ws_users, ws_profiles, ws_episodes, ws_reminders, ws_daily
-    global GSPREAD_CLIENT, SPREADSHEET_ID_FOR_INTAKE  # ← важно для регистрации ПРО-опросника
+    global GSPREAD_CLIENT, SPREADSHEET_ID_FOR_INTAKE
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
@@ -419,7 +419,7 @@ def _sheets_init():
             else:
                 raise
 
-        # сохраним ID открытой/созданной таблицы — тоже пригодится для register_intake_pro
+        # сохраним ID открытой/созданной таблицы — пригодится для register_intake_pro
         try:
             SPREADSHEET_ID_FOR_INTAKE = ss.id  # у gspread Spreadsheet есть .id
         except Exception:
@@ -1013,7 +1013,7 @@ def health60_make_plan(lang: str, symptom_text: str, profile: dict) -> str:
         "profile": {k: profile.get(k, "") for k in ["sex","age","goal","conditions","meds","sleep","activity","diet"]}
     }
     try:
-        resp = oai.chat_completions.create(  # <-- если у тебя тут было .chat.completions.create, оставь как было
+        resp = oai.chat.completions.create(
             model=OPENAI_MODEL,
             temperature=0.2,
             max_tokens=420,
@@ -1042,6 +1042,7 @@ def health60_make_plan(lang: str, symptom_text: str, profile: dict) -> str:
     except Exception as e:
         logging.error(f"health60 LLM error: {e}")
         return fallback
+
 # ------------- Commands & init -------------
 async def post_init(app):
     me = await app.bot.get_me()
@@ -1178,6 +1179,18 @@ async def cmd_uk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_es(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_set(update.effective_user.id, "lang", "es")
     await update.message.reply_text("De acuerdo, responderé en español.")
+# === Новая команда /intake (PRO-опрос 6 вопросов) ===
+async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None) or "en")
+    txt  = {"ru":"🧩 PRO-опрос: 6 ключевых вопросов. Готовы начать?",
+            "uk":"🧩 PRO-опитник: 6 ключових питань. Починаємо?",
+            "en":"🧩 PRO intake: 6 quick questions. Ready?",
+            "es":"🧩 PRO intake: 6 quick questions. Ready?"}[lang]
+    start_label = {"ru":"▶️ Начать","uk":"▶️ Почати","en":"▶️ Start","es":"▶️ Start"}[lang]
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(start_label, callback_data="intake:start")]])
+    await update.message.reply_text(txt, reply_markup=kb)
+
 
 # ------------- Callback handler -------------
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1362,6 +1375,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sessions.setdefault(uid,{})["awaiting_free_feedback"] = True
             await q.message.reply_text(T[lang]["fb_write"])
             return
+
 
 # ------------- Pain triage helpers -------------
 def detect_or_choose_topic(lang: str, text: str) -> Optional[str]:
@@ -1690,7 +1704,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         profiles_upsert(uid,{key:val}); sessions[uid][key]=val
         await advance_profile_ctx(context, update.effective_chat.id, lang, uid); return
 
-        # ===== LLM-ОРКЕСТРАТОР внутри pain-триажа =====
+    # ===== LLM-оркестратор внутри pain-триажа =====
     s = sessions.get(uid, {})
     if s.get("topic") == "pain":
         if re.search(r"\b(stop|exit|back|назад|выход|выйти)\b", text.lower()):
@@ -1817,8 +1831,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return
 
 
-
-
 # ---------- Inline keyboards ----------
 def inline_numbers_0_10() -> InlineKeyboardMarkup:
     rows = []
@@ -1839,7 +1851,9 @@ def inline_list(options: List[str], prefix: str) -> InlineKeyboardMarkup:
         rows.append(row)
     return InlineKeyboardMarkup(rows)
 
+# === ЗАМЕНА inline_topic_kb (кнопка PRO-опроса 6 пунктов) ===
 def inline_topic_kb(lang: str) -> InlineKeyboardMarkup:
+    label = {"ru":"🧩 Опрос 6 пунктов","uk":"🧩 Опитник (6)","en":"🧩 Intake (6 Qs)","es":"🧩 Intake (6)"}[lang]
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🩺 Pain", callback_data="topic|pain"),
          InlineKeyboardButton("😴 Sleep", callback_data="topic|sleep"),
@@ -1848,8 +1862,7 @@ def inline_topic_kb(lang: str) -> InlineKeyboardMarkup:
          InlineKeyboardButton("🔁 Habits", callback_data="topic|habits"),
          InlineKeyboardButton("🧬 Longevity", callback_data="topic|longevity")],
         [InlineKeyboardButton("👤 Profile", callback_data="topic|profile")],
-        # === Блок 3: новая кнопка PRO-опросника ===
-        [intake_entry_button("🙏 Опросник (6 пунктов)")]
+        [InlineKeyboardButton(label, callback_data="intake:start")]
     ])
 
 def inline_accept(lang: str) -> InlineKeyboardMarkup:
@@ -1888,6 +1901,9 @@ def inline_actions(lang: str) -> InlineKeyboardMarkup:
 
 
 # ---------- Main / wiring ----------
+# алиас, чтобы build_app соответствовал ожидаемому имени GCLIENT
+GCLIENT = GSPREAD_CLIENT
+
 def build_app() -> "Application":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
@@ -1903,6 +1919,7 @@ def build_app() -> "Application":
     app.add_handler(CommandHandler("checkin_on",   cmd_checkin_on))
     app.add_handler(CommandHandler("checkin_off",  cmd_checkin_off))
     app.add_handler(CommandHandler("health60",     cmd_health60))
+    app.add_handler(CommandHandler("intake",       cmd_intake))   # новая команда
 
     # Quick language toggles
     app.add_handler(CommandHandler("ru", cmd_ru))
@@ -1914,6 +1931,13 @@ def build_app() -> "Application":
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
+    # Подключаем PRO-опросник (6 пунктов)
+    try:
+        register_intake_pro(app, GCLIENT, on_complete_cb=_ipro_save_to_sheets_and_open_menu)
+        logging.info("Intake Pro registered.")
+    except Exception as e:
+        logging.warning(f"Intake Pro registration failed: {e}")
+
     return app
 
 
@@ -1923,20 +1947,6 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     application = build_app()
-
-    # === Блок 2: регистрация PRO-опросника ===
-    try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
-        gc = None
-        if creds_json:
-            creds = json.loads(creds_json)
-            credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
-            gc = gspread.authorize(credentials)
-        register_intake_pro(application, gspread_client=gc, spreadsheet_id=SHEET_ID)
-        logging.info("Intake Pro registered.")
-    except Exception as e:
-        logging.error(f"Failed to register Intake Pro: {e}")
 
     # Restore scheduled jobs from Sheets/memory (if any)
     try:
