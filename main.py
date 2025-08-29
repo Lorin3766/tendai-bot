@@ -1055,9 +1055,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions.setdefault(user.id, {})["last_user_text"] = "/start"
     await update.message.reply_text(T[lang]["welcome"], reply_markup=ReplyKeyboardRemove())
     await update.message.reply_text(T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
-    # >>> AUTO-INTAKE: показать опрос один раз при первом /start, если профиля ещё нет
-    if not profiles_get(user.id):
-        await start_profile_ctx(context, update.effective_chat.id, lang, user.id)
+
+    # >>> NEW: автоприглашение через «шторку» вместо автозапуска старого опроса
+    if not profiles_get(user.id) and not context.user_data.get(GATE_FLAG_KEY):
+        await gate_show(update, context)
+
     u = users_get(user.id)
     if (u.get("consent") or "").lower() not in {"yes","no"}:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["yes"], callback_data="consent|yes"),
@@ -1179,6 +1181,7 @@ async def cmd_uk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_es(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_set(update.effective_user.id, "lang", "es")
     await update.message.reply_text("De acuerdo, responderé en español.")
+
 # === Новая команда /intake (PRO-опрос 6 вопросов) ===
 async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1191,7 +1194,6 @@ async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(start_label, callback_data="intake:start")]])
     await update.message.reply_text(txt, reply_markup=kb)
 
-
 # ------------- Callback handler -------------
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1199,7 +1201,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(uid).get("lang") or "en")
     chat_id = q.message.chat.id
 
-    # Профиль (интейк)
+    # Профиль (интейк 8 шагов)
     if data.startswith("p|"):
         _, action, key, *rest = data.split("|")
         s = sessions.setdefault(uid, {"profile_active": True, "p_step": 0})
@@ -1218,7 +1220,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             profiles_upsert(uid, {key: ""})
             await advance_profile_ctx(context, chat_id, lang, uid); return
 
-    # Согласие
+    # Согласие на фоллоу-ап
     if data.startswith("consent|"):
         users_set(uid, "consent", "yes" if data.endswith("|yes") else "no")
         try: await q.edit_message_reply_markup(reply_markup=None)
@@ -1553,7 +1555,7 @@ def serious_plan(lang: str, cond: str, profile: dict) -> List[str]:
         }[lang] + [T[lang]["er_text"]]
     return [T[lang]["unknown"]]
 
-# ------------- Profile (intake) -------------
+# ------------- Profile (intake 8 шагов) -------------
 PROFILE_STEPS = [
     {"key":"sex","opts":{
         "ru":[("Мужской","male"),("Женский","female"),("Другое","other")],
@@ -1635,8 +1637,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(T[lang_guess]["ask_consent"], reply_markup=kb)
         if _has_jq_ctx(context):
             schedule_daily_checkin(context.application, uid, 0, DEFAULT_CHECKIN_LOCAL, lang_guess)
-        # >>> AUTO-INTAKE: сразу запустить первый опрос новому пользователю
-        await start_profile_ctx(context, update.effective_chat.id, lang_guess, uid)
+        # (по желанию) можно сразу показать «шторку», но мы делаем это на /start
         return
 
     # динамическая смена языка
@@ -1694,7 +1695,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # свободный ответ для intake
+    # свободный ответ для intake-профиля (8 шагов)
     if sessions.get(uid, {}).get("p_wait_key"):
         key = sessions[uid]["p_wait_key"]; sessions[uid]["p_wait_key"] = None
         val = text
@@ -1851,7 +1852,7 @@ def inline_list(options: List[str], prefix: str) -> InlineKeyboardMarkup:
         rows.append(row)
     return InlineKeyboardMarkup(rows)
 
-# === ЗАМЕНА inline_topic_kb (кнопка PRO-опроса 6 пунктов) ===
+# Кнопка PRO-опроса 6 пунктов — шлёт intake:start
 def inline_topic_kb(lang: str) -> InlineKeyboardMarkup:
     label = {"ru":"🧩 Опрос 6 пунктов","uk":"🧩 Опитник (6)","en":"🧩 Intake (6 Qs)","es":"🧩 Intake (6)"}[lang]
     return InlineKeyboardMarkup([
@@ -1862,7 +1863,7 @@ def inline_topic_kb(lang: str) -> InlineKeyboardMarkup:
          InlineKeyboardButton("🔁 Habits", callback_data="topic|habits"),
          InlineKeyboardButton("🧬 Longevity", callback_data="topic|longevity")],
         [InlineKeyboardButton("👤 Profile", callback_data="topic|profile")],
-        [InlineKeyboardButton(label, callback_data="intake:start")]
+        [InlineKeyboardButton(label, callback_data="intake:start")]  # ← ключевое
     ])
 
 def inline_accept(lang: str) -> InlineKeyboardMarkup:
@@ -1919,24 +1920,23 @@ def build_app() -> "Application":
     app.add_handler(CommandHandler("checkin_on",   cmd_checkin_on))
     app.add_handler(CommandHandler("checkin_off",  cmd_checkin_off))
     app.add_handler(CommandHandler("health60",     cmd_health60))
-    app.add_handler(CommandHandler("intake",       cmd_intake))   # новая команда
+    app.add_handler(CommandHandler("intake",       cmd_intake))   # команда запуска плагина
 
-    # Quick language toggles
-    app.add_handler(CommandHandler("ru", cmd_ru))
-    app.add_handler(CommandHandler("en", cmd_en))
-    app.add_handler(CommandHandler("uk", cmd_uk))
-    app.add_handler(CommandHandler("es", cmd_es))
-
-    # Callbacks & text
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-
-    # Подключаем PRO-опросник (6 пунктов)
+    # --- ВАЖНО: сначала регистрируем Intake Pro, затем остальные колбэки ---
     try:
         register_intake_pro(app, GCLIENT, on_complete_cb=_ipro_save_to_sheets_and_open_menu)
         logging.info("Intake Pro registered.")
     except Exception as e:
         logging.warning(f"Intake Pro registration failed: {e}")
+
+    # Обработчик «шторки» (gate)
+    app.add_handler(CallbackQueryHandler(gate_cb, pattern=r"^gate:"))
+
+    # Общий колбэк ДОЛЖЕН ИСКЛЮЧАТЬ intake:, чтобы плагин получил свои события
+    app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^(?!intake:)"))
+
+    # Текстовые сообщения
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
     return app
 
