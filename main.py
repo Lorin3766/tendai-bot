@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os, re, json, uuid, logging, math, random
 from datetime import datetime, timedelta, timezone, time as dtime, date
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Set
 from difflib import SequenceMatcher
 
 from dotenv import load_dotenv
@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 from openai import OpenAI
-# === PRO-INTAKE (опционально, не критично для запуска) ===
+# === PRO-INTAKE (опционально) ===
 try:
     from intake_pro import register_intake_pro  # noqa
 except Exception:
@@ -50,6 +50,9 @@ DEFAULT_EVENING_LOCAL = "20:00"
 # Quiet hours default (local) if not set in profile (22:00-08:00)
 DEFAULT_QUIET_HOURS = "22:00-08:00"
 
+# Max auto messages per local day (policy)
+AUTO_MAX_PER_DAY = 2
+
 oai: Optional[OpenAI] = None
 try:
     if OPENAI_API_KEY:
@@ -72,7 +75,7 @@ def norm_lang(code: Optional[str]) -> str:
 T = {
     "en": {
         "welcome": "Hi! I’m TendAI — your health & longevity assistant.\nDescribe what’s bothering you; I’ll guide you. Let’s do a quick 40s intake to tailor advice.",
-        "help": "Short checkups, 24–48h plans, reminders, daily check-ins.\nCommands: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /health60 /ru /uk /en /es\nPlus: /energy /hydrate /skintip /cycle /youth",
+        "help": "Short checkups, 24–48h plans, reminders, daily check-ins.\nCommands: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /evening_on 20:00 /evening_off /settz +2 /health60 /mood /energy /hydrate /skintip /cycle /youth /ru /uk /en /es",
         "privacy": "TendAI is not a medical service and can’t replace a doctor. We store minimal data for reminders. /delete_data to erase.",
         "paused_on": "Notifications paused. Use /resume to enable.",
         "paused_off": "Notifications resumed.",
@@ -96,6 +99,7 @@ T = {
         "daily_gm":"Good morning! Quick daily check-in:",
         "mood_good":"😃 Good","mood_ok":"😐 Okay","mood_bad":"😣 Poor","mood_note":"✍️ Comment",
         "mood_thanks":"Thanks! Have a smooth day 👋",
+        "mood_cmd":"How do you feel right now?",
         "triage_pain_q1":"Where does it hurt?",
         "triage_pain_q1_opts":["Head","Throat","Back","Belly","Other"],
         "triage_pain_q2":"What kind of pain?",
@@ -165,10 +169,16 @@ T = {
         "quiet_saved": "Quiet hours saved: {qh}",
         "set_quiet_btn": "🌙 Set quiet hours",
         "ask_quiet": "Type quiet hours as HH:MM-HH:MM (local), e.g. 22:00-08:00",
+
+        # New: evening check-in
+        "evening_intro": "Evening check-in:",
+        "evening_tip_btn": "🪄 Tip of the day",
+        "evening_set": "Evening check-in set to {t} (local).",
+        "evening_off": "Evening check-in disabled.",
     },
     "ru": {
         "welcome":"Привет! Я TendAI — ассистент здоровья и долголетия.\nРасскажи, что беспокоит; я подскажу. Сначала короткий опрос (~40с), чтобы советы были точнее.",
-        "help":"Короткие проверки, план на 24–48 ч, напоминания, ежедневные чек-ины.\nКоманды: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +3 /health60 /ru /uk /en /es\nДоп.: /energy /hydrate /skintip /cycle /youth",
+        "help":"Короткие проверки, план на 24–48 ч, напоминания, ежедневные чек-ины.\nКоманды: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /evening_on 20:00 /evening_off /settz +3 /health60 /mood /energy /hydrate /skintip /cycle /youth /ru /uk /en /es",
         "privacy":"TendAI не заменяет врача. Храним минимум данных для напоминаний. /delete_data — удалить.",
         "paused_on":"Напоминания поставлены на паузу. /resume — включить.",
         "paused_off":"Напоминания снова включены.",
@@ -192,6 +202,7 @@ T = {
         "daily_gm":"Доброе утро! Быстрый чек-ин:",
         "mood_good":"😃 Хорошо","mood_ok":"😐 Нормально","mood_bad":"😣 Плохо","mood_note":"✍️ Комментарий",
         "mood_thanks":"Спасибо! Хорошего дня 👋",
+        "mood_cmd":"Как сейчас самочувствие?",
         "triage_pain_q1":"Где болит?",
         "triage_pain_q1_opts":["Голова","Горло","Спина","Живот","Другое"],
         "triage_pain_q2":"Какой характер боли?",
@@ -261,10 +272,16 @@ T = {
         "quiet_saved": "Тихие часы сохранены: {qh}",
         "set_quiet_btn": "🌙 Тихие часы",
         "ask_quiet": "Введите тихие часы как ЧЧ:ММ-ЧЧ:ММ (локально), напр. 22:00-08:00",
+
+        # New: evening check-in
+        "evening_intro": "Вечерний чек-ин:",
+        "evening_tip_btn": "🪄 Совет дня",
+        "evening_set": "Вечерний чек-ин установлен на {t} (локально).",
+        "evening_off": "Вечерний чек-ин отключён.",
     },
     "uk": {
         "welcome":"Привіт! Я TendAI — асистент здоров’я та довголіття.\nРозкажи, що турбує; я підкажу. Спершу швидкий опитник (~40с) для точніших порад.",
-        "help":"Короткі перевірки, план на 24–48 год, нагадування, щоденні чек-іни.\nКоманди: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /health60 /ru /uk /en /es\nДод.: /energy /hydrate /skintip /cycle /youth",
+        "help":"Короткі перевірки, план на 24–48 год, нагадування, щоденні чек-іни.\nКоманди: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /evening_on 20:00 /evening_off /settz +2 /health60 /mood /energy /hydrate /skintip /cycle /youth /ru /uk /en /es",
         "privacy":"TendAI не замінює лікаря. Зберігаємо мінімум даних для нагадувань. /delete_data — видалити.",
         "paused_on":"Нагадування призупинені. /resume — увімкнути.",
         "paused_off":"Нагадування знову увімкнені.",
@@ -288,6 +305,7 @@ T = {
         "daily_gm":"Доброго ранку! Швидкий чек-ін:",
         "mood_good":"😃 Добре","mood_ok":"😐 Нормально","mood_bad":"😣 Погано","mood_note":"✍️ Коментар",
         "mood_thanks":"Дякую! Гарного дня 👋",
+        "mood_cmd":"Як почуваєтесь зараз?",
         "triage_pain_q1":"Де болить?",
         "triage_pain_q1_opts":["Голова","Горло","Спина","Живіт","Інше"],
         "triage_pain_q2":"Який характер болю?",
@@ -357,6 +375,12 @@ T = {
         "quiet_saved": "Тихі години збережено: {qh}",
         "set_quiet_btn": "🌙 Тихі години",
         "ask_quiet": "Введіть тихі години як ГГ:ХХ-ГГ:ХХ (локально), напр. 22:00-08:00",
+
+        # New: evening check-in
+        "evening_intro": "Вечірній чек-ін:",
+        "evening_tip_btn": "🪄 Порада дня",
+        "evening_set": "Вечірній чек-ін встановлено на {t} (локально).",
+        "evening_off": "Вечірній чек-ін вимкнено.",
     },
 }
 # Для простоты оставим испанский как английский (заглушка)
@@ -403,6 +427,14 @@ def profile_is_incomplete(profile_row: dict) -> bool:
     keys = ["sex","age","goal"]
     return sum(1 for k in keys if str(profile_row.get(k) or "").strip()) < 2
 
+def age_to_band(age: int) -> str:
+    if age <= 0: return "unknown"
+    if age <= 25: return "18–25"
+    if age <= 35: return "26–35"
+    if age <= 45: return "36–45"
+    if age <= 60: return "46–60"
+    return "60+"
+
 # ===== ONBOARDING GATE (Шторка) =====
 GATE_FLAG_KEY = "menu_unlocked"
 
@@ -436,7 +468,9 @@ async def gate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.application.bot.send_message(q.message.chat_id, "/start")
 
 # === NEW: MINI-INTAKE (с первого сообщения) ===
-MINI_KEYS = ["sex","age","goal","diet_focus","steps_target"]
+# добавили новые шаги: conditions, meds_allergies (фритекст), habits
+MINI_KEYS = ["sex","age","goal","diet_focus","steps_target","conditions","meds_allergies","habits"]
+MINI_FREE_KEYS: Set[str] = {"meds_allergies"}  # требующие фритекста по кнопке "✍️"
 MINI_STEPS = {
     "sex": {
         "ru":[("Мужской","male"),("Женский","female"),("Другое","other")],
@@ -473,26 +507,47 @@ MINI_STEPS = {
         "es":[("<5k","5000"),("5–8k","8000"),("8–12k","12000"),("Deporte","15000")],
         "label":{"ru":"Шаги/активность:","en":"Steps/activity:","uk":"Кроки/активність:","es":"Pasos/actividad:"}
     },
+    "conditions": {
+        "ru":[("Нет","none"),("Сердечно-сосуд.","cvd"),("ЩЖ/эндокр.","endocrine"),("ЖКТ","gi"),("Аллергия","allergy"),("Другое","other")],
+        "en":[("None","none"),("Cardio/vascular","cvd"),("Thyroid/endocrine","endocrine"),("GI","gi"),("Allergy","allergy"),("Other","other")],
+        "uk":[("Немає","none"),("Серцево-суд.","cvd"),("ЩЗ/ендокр.","endocrine"),("ШКТ","gi"),("Алергія","allergy"),("Інше","other")],
+        "es":[("Ninguno","none"),("Cardio/vascular","cvd"),("Tiroides/endócr.","endocrine"),("GI","gi"),("Alergia","allergy"),("Otro","other")],
+        "label":{"ru":"Хронические состояния:","en":"Chronic conditions:","uk":"Хронічні стани:","es":"Condiciones crónicas:"}
+    },
+    "meds_allergies": {
+        "ru":[], "en":[], "uk":[], "es":[],
+        "label":{"ru":"Лекарства/добавки/аллергии (коротко):","en":"Meds/supplements/allergies (short):","uk":"Ліки/добавки/алергії (коротко):","es":"Medicamentos/suplementos/alergias (corto):"}
+    },
+    "habits": {
+        "ru":[("Не курю","no_smoke"),("Курю","smoke"),("Алкоголь редко","alc_low"),("Алкоголь часто","alc_high"),("Кофеин 0–1","caf_low"),("Кофеин 2–3","caf_mid"),("Кофеин 4+","caf_high")],
+        "en":[("No smoking","no_smoke"),("Smoking","smoke"),("Alcohol rare","alc_low"),("Alcohol often","alc_high"),("Caffeine 0–1","caf_low"),("Caffeine 2–3","caf_mid"),("Caffeine 4+","caf_high")],
+        "uk":[("Не курю","no_smoke"),("Курю","smoke"),("Алкоголь рідко","alc_low"),("Алкоголь часто","alc_high"),("Кофеїн 0–1","caf_low"),("Кофеїн 2–3","caf_mid"),("Кофеїн 4+","caf_high")],
+        "es":[("No fuma","no_smoke"),("Fuma","smoke"),("Alcohol raro","alc_low"),("Alcohol a menudo","alc_high"),("Cafeína 0–1","caf_low"),("Cafeína 2–3","caf_mid"),("Cafeína 4+","caf_high")],
+        "label":{"ru":"Привычки (выберите ближе всего):","en":"Habits (pick closest):","uk":"Звички (оберіть ближче):","es":"Hábitos (elige):"}
+    },
 }
 
 async def start_mini_intake(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
     sessions[uid] = {"mini_active": True, "mini_step": 0, "mini_answers": {}}
     await context.bot.send_message(chat_id, {
-        "ru":"🔎 Мини-опрос для персонализации (4–5 кликов).",
-        "uk":"🔎 Міні-опитування для персоналізації (4–5 кліків).",
-        "en":"🔎 Mini-intake for personalization (4–5 taps).",
-        "es":"🔎 Mini-intake para personalización (4–5 toques).",
+        "ru":"🔎 Мини-опрос для персонализации (4–6 кликов).",
+        "uk":"🔎 Міні-опитування для персоналізації (4–6 кліків).",
+        "en":"🔎 Mini-intake for personalization (4–6 taps).",
+        "es":"🔎 Mini-intake para personalización (4–6 toques).",
     }[lang], reply_markup=ReplyKeyboardRemove())
     await ask_next_mini(context, chat_id, lang, uid)
 
 def build_mini_kb(lang: str, key: str) -> InlineKeyboardMarkup:
-    opts = MINI_STEPS[key][lang]
+    opts = MINI_STEPS[key].get(lang, [])
     rows, row = [], []
     for label, val in opts:
         row.append(InlineKeyboardButton(label, callback_data=f"mini|choose|{key}|{val}"))
         if len(row) == 3:
             rows.append(row); row=[]
     if row: rows.append(row)
+    # для ключей с фритекстом — отдельная кнопка ✍️
+    if key in MINI_FREE_KEYS or (not opts):
+        rows.append([InlineKeyboardButton(T[lang]["write"], callback_data=f"mini|write|{key}")])
     rows.append([InlineKeyboardButton(T[lang]["skip"], callback_data=f"mini|skip|{key}")])
     return InlineKeyboardMarkup(rows)
 
@@ -501,7 +556,12 @@ async def ask_next_mini(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: 
     s = sessions.get(uid, {})
     step_idx = s.get("mini_step", 0)
     if step_idx >= len(MINI_KEYS):
-        profiles_upsert(uid, s.get("mini_answers", {}))
+        # финальная запись
+        answers = s.get("mini_answers", {})
+        # спец-обработка meds_allergies: пишем и в meds, и в allergies (одним текстом)
+        if answers.get("meds_allergies"):
+            profiles_upsert(uid, {"meds":answers["meds_allergies"], "allergies":answers["meds_allergies"]})
+        profiles_upsert(uid, answers)
         sessions[uid]["mini_active"] = False
         await context.bot.send_message(chat_id, T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
         return
@@ -555,7 +615,6 @@ def _ws_ensure_columns(ws, desired_headers: List[str]):
             return
         missing = [h for h in desired_headers if h not in current]
         if missing:
-            # add missing columns at end
             for h in missing:
                 ws.update_cell(1, len(current)+1, h)
                 current.append(h)
@@ -592,21 +651,20 @@ def _sheets_init():
             try:
                 ws = ss.worksheet(title)
             except gspread.WorksheetNotFound:
-                ws = ss.add_worksheet(title=title, rows=2000, cols=max(20, len(headers)))
+                ws = ss.add_worksheet(title=title, rows=4000, cols=max(20, len(headers)))
                 ws.append_row(headers)
             if not ws.get_all_values():
                 ws.append_row(headers)
-            # ensure new headers (idempotent)
             _ws_ensure_columns(ws, headers)
             return ws
 
         ws_feedback = _ensure_ws("Feedback", ["timestamp","user_id","name","username","rating","comment"])
-        ws_users = _ensure_ws("Users", ["user_id","username","lang","consent","tz_offset","checkin_hour","paused"])
+        ws_users = _ensure_ws("Users", ["user_id","username","lang","consent","tz_offset","checkin_hour","evening_hour","paused","last_seen","last_auto_date","last_auto_count"])
         # Profiles — extended headers with personalization fields
         ws_profiles = _ensure_ws("Profiles", [
             "user_id","sex","age","goal","goals","conditions","meds","allergies",
-            "sleep","activity","diet","diet_focus","steps_target",
-            "cycle_enabled","cycle_last_date","cycle_avg_len",
+            "sleep","activity","diet","diet_focus","steps_target","habits",
+            "cycle_enabled","cycle_last_date","cycle_avg_len","last_cycle_tip_date",
             "quiet_hours","consent_flags","notes","updated_at"
         ])
         ws_episodes = _ensure_ws("Episodes", ["episode_id","user_id","topic","started_at","baseline_severity","red_flags",
@@ -617,7 +675,7 @@ def _sheets_init():
         ws_rules = _ensure_ws("Rules", ["rule_id","topic","segment","trigger","advice_text","citation","last_updated","enabled"])
         # Optional: Challenges
         ws_challenges = _ensure_ws("Challenges", ["user_id","challenge_id","name","start_date","length_days","days_done","status"])
-        # <<< ВАЖНО: Лист Reminders (не хватало)
+        # Reminders
         ws_reminders = _ensure_ws("Reminders", ["id","user_id","text","when_utc","created_at","status"])
 
         logging.info("Google Sheets connected.")
@@ -660,7 +718,11 @@ def users_upsert(uid: int, username: str, lang: str):
         "consent": "no",
         "tz_offset": "0",
         "checkin_hour": DEFAULT_CHECKIN_LOCAL,
-        "paused": "no"
+        "evening_hour": "",
+        "paused": "no",
+        "last_seen": iso(utcnow()),
+        "last_auto_date": "",
+        "last_auto_count": "0",
     }
 
     if SHEETS_ENABLED:
@@ -669,11 +731,13 @@ def users_upsert(uid: int, username: str, lang: str):
         end_col = gsu.rowcol_to_a1(1, len(hdr)).rstrip("1")
         for i, r in enumerate(vals, start=2):
             if str(r.get("user_id")) == str(uid):
-                ws_users.update(f"A{i}:{end_col}{i}", [[base.get(h, "") for h in hdr]])
+                # merge (не перезатираем вручную выставленные значения)
+                merged = {**r, **{k: base[k] for k in base if not str(r.get(k) or "").strip()}}
+                ws_users.update(f"A{i}:{end_col}{i}", [[merged.get(h, "") for h in hdr]])
                 return
         ws_users.append_row([base.get(h, "") for h in hdr])
     else:
-        MEM_USERS[uid] = base
+        MEM_USERS[uid] = {**MEM_USERS.get(uid, {}), **base}
 
 def users_set(uid: int, field: str, value: str):
     if SHEETS_ENABLED:
@@ -862,7 +926,6 @@ def local_to_utc_hour_min(tz_offset_hours:int, hhmm:str)->Tuple[int,int]:
     h,m = hhmm_tuple(hhmm); return ((h - tz_offset_hours) % 24, m)
 
 def parse_quiet_hours(qh: str)->Tuple[Tuple[int,int], Tuple[int,int]]:
-    # "22:00-08:00" -> ((22,0),(8,0))
     try:
         a,b = qh.split("-")
         return hhmm_tuple(a), hhmm_tuple(b)
@@ -875,19 +938,73 @@ def is_in_quiet(local_dt: datetime, qh: str)->bool:
     end   = local_dt.replace(hour=eh, minute=em, second=0, microsecond=0)
     if (sh,sm) <= (eh,em):
         return start <= local_dt < end
-    # overnight wrap
     return local_dt >= start or local_dt < end
 
 def adjust_out_of_quiet(local_dt: datetime, qh: str)->datetime:
     if not is_in_quiet(local_dt, qh):
         return local_dt
     (sh,sm),(eh,em) = parse_quiet_hours(qh)
-    # If in quiet, move to next end
     end = local_dt.replace(hour=eh, minute=em, second=0, microsecond=0)
     if (sh,sm) > (eh,em) and local_dt.time() < dtime(eh,em):
-        # quiet wraps overnight; if before end, today end already in morning
         return end
     return end + timedelta(days=1)
+
+# --------- AUTO: day-limit helpers ----------
+def _user_lang(uid: int) -> str:
+    return norm_lang(users_get(uid).get("lang") or "en")
+
+def _user_tz_off(uid: int) -> int:
+    try:
+        return int(str(users_get(uid).get("tz_offset") or "0"))
+    except Exception:
+        return 0
+
+def user_local_now(uid: int) -> datetime:
+    return utcnow() + timedelta(hours=_user_tz_off(uid))
+
+def local_to_utc_dt(uid: int, local_dt: datetime) -> datetime:
+    return (local_dt - timedelta(hours=_user_tz_off(uid))).replace(tzinfo=timezone.utc)
+
+def _user_quiet_hours(uid: int) -> str:
+    prof = profiles_get(uid) or {}
+    qh = (prof.get("quiet_hours") or "").strip()
+    return qh if qh else DEFAULT_QUIET_HOURS
+
+def _same_local_day(d1: datetime, d2: datetime) -> bool:
+    return d1.date() == d2.date()
+
+def can_send_auto(uid: int) -> bool:
+    u = users_get(uid)
+    now_local = user_local_now(uid)
+    last_date = (u.get("last_auto_date") or "")
+    count = int(str(u.get("last_auto_count") or "0"))
+    if last_date:
+        try:
+            last_d = datetime.strptime(last_date, "%Y-%m-%d").date()
+        except:
+            last_d = None
+    else:
+        last_d = None
+    if (last_d is None) or (last_d != now_local.date()):
+        # новый день
+        users_set(uid, "last_auto_date", now_local.date().isoformat())
+        users_set(uid, "last_auto_count", "0")
+        count = 0
+    return count < AUTO_MAX_PER_DAY
+
+def inc_auto(uid: int):
+    u = users_get(uid)
+    now_local = user_local_now(uid)
+    last_date = (u.get("last_auto_date") or "")
+    count = int(str(u.get("last_auto_count") or "0"))
+    if last_date != now_local.date().isoformat():
+        users_set(uid, "last_auto_date", now_local.date().isoformat())
+        users_set(uid, "last_auto_count", "1")
+    else:
+        users_set(uid, "last_auto_count", str(count+1))
+
+def update_last_seen(uid: int):
+    users_set(uid, "last_seen", iso(utcnow()))
 
 # --------- Scheduling from sheet (existing reminders) ---------
 def schedule_from_sheet_on_start(app):
@@ -929,7 +1046,12 @@ def schedule_from_sheet_on_start(app):
         uid = int(u.get("user_id"))
         tz_off = int(str(u.get("tz_offset") or "0"))
         hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
-        schedule_daily_checkin(app, uid, tz_off, hhmm, norm_lang(u.get("lang") or "en"))
+        lang = norm_lang(u.get("lang") or "en")
+        schedule_daily_checkin(app, uid, tz_off, hhmm, lang)
+        # evening?
+        eh = (u.get("evening_hour") or "").strip()
+        if eh:
+            schedule_evening_checkin(app, uid, tz_off, eh, lang)
 
 def schedule_daily_checkin(app, uid:int, tz_off:int, hhmm_local:str, lang:str):
     if not _has_jq_app(app):
@@ -940,6 +1062,16 @@ def schedule_daily_checkin(app, uid:int, tz_off:int, hhmm_local:str, lang:str):
     h_utc, m_utc = local_to_utc_hour_min(tz_off, hhmm_local)
     t = dtime(hour=h_utc, minute=m_utc, tzinfo=timezone.utc)
     app.job_queue.run_daily(job_daily_checkin, time=t, name=f"daily_{uid}", data={"user_id":uid,"lang":lang})
+
+def schedule_evening_checkin(app, uid:int, tz_off:int, hhmm_local:str, lang:str):
+    if not _has_jq_app(app):
+        logging.warning(f"JobQueue not available – skip evening scheduling for uid={uid}.")
+        return
+    for j in app.job_queue.get_jobs_by_name(f"evening_{uid}"):
+        j.schedule_removal()
+    h_utc, m_utc = local_to_utc_hour_min(tz_off, hhmm_local)
+    t = dtime(hour=h_utc, minute=m_utc, tzinfo=timezone.utc)
+    app.job_queue.run_daily(job_evening_checkin, time=t, name=f"evening_{uid}", data={"user_id":uid,"lang":lang})
 
 # ------------- Jobs -------------
 async def job_checkin_episode(context: ContextTypes.DEFAULT_TYPE):
@@ -953,6 +1085,7 @@ async def job_checkin_episode(context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(u.get("lang") or "en")
     kb = inline_numbers_0_10()
     try:
+        # тихие часы — не затрагиваем: это ответ на активный эпизод
         await context.bot.send_message(uid, T[lang]["checkin_ping"], reply_markup=kb)
         episode_set(eid, "next_checkin_at", "")
     except Exception as e:
@@ -971,8 +1104,48 @@ async def job_oneoff_reminder(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"reminder send error: {e}")
     reminders_mark_sent(rid)
 
+# -------- Rules helpers (evidence-based) --------
+def _build_segment(profile: dict) -> str:
+    goal = (profile.get("goal") or "").lower()
+    sex = (profile.get("sex") or "").lower()
+    age = 0
+    m = re.search(r"\d+", str(profile.get("age") or ""))
+    if m: age = int(m.group(0))
+    band = age_to_band(age)
+    # простая схема: goal|sex|ageband
+    return f"{goal}|{sex}|{band}"
+
+def rules_fetch(topic: str, segment: str) -> Optional[dict]:
+    try:
+        rows = ws_rules.get_all_records() if SHEETS_ENABLED else MEM_RULES
+        # сначала точное совпадение
+        for r in rows:
+            if str(r.get("enabled","1")).strip() in {"1","yes","true"} and \
+               (r.get("topic","").strip().lower() == topic.strip().lower()) and \
+               (r.get("segment","").strip().lower() == segment.strip().lower()):
+                return r
+        # затем fallback по topic
+        for r in rows:
+            if str(r.get("enabled","1")).strip() in {"1","yes","true"} and \
+               (r.get("topic","").strip().lower() == topic.strip().lower()) and \
+               (not str(r.get("segment","")).strip()):
+                return r
+    except Exception as e:
+        logging.warning(f"rules_fetch error: {e}")
+    return None
+
+# ---------- Content builders ----------
 def _get_daily_tip(profile: dict, lang: str) -> str:
-    # Simple segmented tips; could be extended by Rules sheet
+    # Rules override
+    seg = _build_segment(profile)
+    r = rules_fetch("nutrition", seg)
+    if r:
+        cit = r.get("citation","").strip()
+        base = r.get("advice_text","").strip()
+        tip = base if not cit else f"{base} ({cit})"
+        return tip
+
+    # Simple segmented tips (fallback)
     goal = (profile.get("goal") or profile.get("goals") or "").lower()
     age = int(re.search(r"\d+", str(profile.get("age") or "0")).group(0)) if re.search(r"\d+", str(profile.get("age") or "")) else 0
     sex = (profile.get("sex") or "").lower()
@@ -1022,6 +1195,14 @@ def _get_daily_tip(profile: dict, lang: str) -> str:
     return random.choice(pool)
 
 def _get_skin_tip(lang: str, sex: str, age: int) -> str:
+    # Rules override (skin)
+    seg = _build_segment({"goal":"","sex":sex,"age":age})
+    r = rules_fetch("skin", seg)
+    if r:
+        cit = r.get("citation","").strip()
+        base = r.get("advice_text","").strip()
+        return base if not cit else f"{base} ({cit})"
+
     if lang=="ru":
         base = [
             "Ежедневно SPF 30+ утром; смывать вечером.",
@@ -1079,7 +1260,6 @@ def _cycle_phase(last_date_str: str, avg_len: int) -> Optional[str]:
 # --------- UI helpers (клавиатуры) ----------
 def inline_numbers_0_10()->InlineKeyboardMarkup:
     row = [InlineKeyboardButton(str(i), callback_data=f"num|{i}") for i in range(0,11)]
-    # разобьём на 2 строки
     return InlineKeyboardMarkup([row[:6], row[6:]])
 
 def inline_list(options: List[str], prefix: str)->InlineKeyboardMarkup:
@@ -1137,7 +1317,7 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
         logging.error(f"router LLM error: {e}")
         return {"intent":"other","assistant_reply":T[lang]["unknown"],"followups":[],"needs_more":True,"red_flags":False,"confidence":0.3}
 
-# ===== LLM ORCHESTRATOR FOR PAIN TRIAGE (функции оставляем — пригодятся) =====
+# ===== LLM ORCHESTRATOR FOR PAIN TRIAGE =====
 def _kb_for_code(lang: str, code: str):
     if code == "painloc":
         kb = inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
@@ -1324,11 +1504,10 @@ def health60_make_plan(lang: str, symptom_text: str, profile: dict) -> str:
         logging.error(f"health60 LLM error: {e}")
         return fallback
 
-# ------------- Commands (часть будет продолжена ниже) -------------
+# ------------- Commands (часть продолжится ниже в Части 2) -------------
 async def post_init(app):
     me = await app.bot.get_me()
     logging.info(f"BOT READY: @{me.username} (id={me.id})")
-    # Планирование из таблицы (после рестарта инстанса)
     try:
         schedule_from_sheet_on_start(app)
     except Exception as e:
@@ -1340,6 +1519,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_upsert(user.id, user.username or "", lang)
     context.user_data["lang"] = lang
     sessions.setdefault(user.id, {})["last_user_text"] = "/start"
+    update_last_seen(user.id)
 
     await update.message.reply_text(T[lang]["welcome"], reply_markup=ReplyKeyboardRemove())
 
@@ -1362,29 +1542,38 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
     if _has_jq_ctx(context):
         schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)
+        # Evening, если задан
+        eh = (u.get("evening_hour") or "").strip()
+        if eh:
+            schedule_evening_checkin(context.application, user.id, tz_off, eh, lang)
     else:
-        logging.warning("JobQueue not available on /start – daily check-in not scheduled.")
+        logging.warning("JobQueue not available on /start – daily/evening check-in not scheduled.")
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(update.effective_user.id).get("lang") or "en")
+    update_last_seen(update.effective_user.id)
     await update.message.reply_text(T[lang]["help"])
 
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(update.effective_user.id).get("lang") or "en")
+    update_last_seen(update.effective_user.id)
     await update.message.reply_text(T[lang]["privacy"])
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id; users_set(uid, "paused", "yes")
     lang = norm_lang(users_get(uid).get("lang") or "en")
+    update_last_seen(uid)
     await update.message.reply_text(T[lang]["paused_on"])
 
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id; users_set(uid, "paused", "no")
     lang = norm_lang(users_get(uid).get("lang") or "en")
+    update_last_seen(uid)
     await update.message.reply_text(T[lang]["paused_off"])
 
 async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    update_last_seen(uid)
     if SHEETS_ENABLED:
         vals = ws_users.get_all_values()
         for i in range(2, len(vals)+1):
@@ -1392,7 +1581,6 @@ async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ws_users.delete_rows(i); break
         try:
             vals = ws_profiles.get_all_values()
-            # удалим все найденные строки профиля
             idxs = []
             for i in range(2, len(vals)+1):
                 if ws_profiles.cell(i,1).value == str(uid):
