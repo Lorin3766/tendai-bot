@@ -161,13 +161,6 @@ T = {
         "evening_tip_btn": "🪄 Tip of the day",
         "evening_set": "Evening check-in set to {t} (local).",
         "evening_off": "Evening check-in disabled.",
-
-        # NEW: morning mood (4 options) + skip + tips
-        "gm_excellent": "👍 Excellent", "gm_ok": "🙂 Okay", "gm_tired": "😐 Tired", "gm_pain": "🤕 In pain", "gm_skip": "⏭ Skip today",
-        "gm_tip_excellent": "Love it! Keep the streak: 5–10 min daylight before noon ☀️",
-        "gm_tip_ok": "Nice. Quick boost: a glass of water and a short walk.",
-        "gm_tip_tired": "Got it. Tiny reset: 300–500 ml water and 5 min movement.",
-        "gm_tip_pain": "Let’s narrow it down — where does it hurt? (or tap ⚡ “Health in 60s” below)",
     },
     "ru": {
         "welcome":"Привет! Я TendAI — ассистент здоровья и долголетия.\nРасскажи, что беспокоит; я подскажу. Сначала короткий опрос (~40с), чтобы советы были точнее.",
@@ -268,13 +261,6 @@ T = {
         "evening_tip_btn": "🪄 Совет дня",
         "evening_set": "Вечерний чек-ин установлен на {t} (локально).",
         "evening_off": "Вечерний чек-ин отключён.",
-
-        # NEW: утро 4 кнопки + пропуск + советы
-        "gm_excellent": "👍 Отлично", "gm_ok": "🙂 Нормально", "gm_tired": "😐 Устал", "gm_pain": "🤕 Болит", "gm_skip": "⏭ Пропустить сегодня",
-        "gm_tip_excellent": "Супер! Сохраните темп: 5–10 мин дневного света до полудня ☀️",
-        "gm_tip_ok": "Ок! Небольшой буст: стакан воды и короткая прогулка.",
-        "gm_tip_tired": "Понимаю. Коротко: 300–500 мл воды и 5 мин движения — мозгу легче.",
-        "gm_tip_pain": "Давайте уточним — где болит? (или нажмите ⚡ «60 сек» внизу)",
     },
     "uk": {
         "welcome":"Привіт! Я TendAI — асистент здоров’я та довголіття.\nРозкажи, що турбує; я підкажу. Спершу швидкий опитник (~40с) для точніших порад.",
@@ -362,7 +348,7 @@ T = {
         "streak_day": "День турботи",
         "challenge_btn": "🎯 Челендж 7 днів (вода)",
         "challenge_started": "Челендж запущено! Я враховуватиму ваші щоденні чек-іни.",
-        "challenge_progress": "Прогрес челенджа: {d}/{len} днів.",
+        "challenge_progress": "Прогрес челенджу: {d}/{len} днів.",
         "cycle_btn": "🩸 Цикл",
         "cycle_consent": "Бажаєте відстежувати цикл для м’яких порад у потрібні дні?",
         "cycle_ask_last": "Вкажіть дату останніх менструацій (РРРР-ММ-ДД):",
@@ -375,13 +361,6 @@ T = {
         "evening_tip_btn": "🪄 Порада дня",
         "evening_set": "Вечірній чек-ін встановлено на {t} (локально).",
         "evening_off": "Вечірній чек-ін вимкнено.",
-
-        # NEW:
-        "gm_excellent": "👍 Чудово", "gm_ok": "🙂 Нормально", "gm_tired": "😐 Втома", "gm_pain": "🤕 Болить", "gm_skip": "⏭ Пропустити сьогодні",
-        "gm_tip_excellent": "Клас! Тримай темп: 5–10 хв денного світла до полудня ☀️",
-        "gm_tip_ok": "Ок! Невеличкий буст: склянка води і коротка прогулянка.",
-        "gm_tip_tired": "Розумію. Мініресет: 300–500 мл води і 5 хв руху.",
-        "gm_tip_pain": "Давайте уточнимо — де болить? (або натисни ⚡ «60 сек» внизу)",
     },
 }
 T["es"] = T["en"]  # заглушка
@@ -554,7 +533,9 @@ async def ask_next_mini(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: 
             profiles_upsert(uid, {"meds":answers["meds_allergies"], "allergies":answers["meds_allergies"]})
         profiles_upsert(uid, answers)
         sessions[uid]["mini_active"] = False
-        await context.bot.send_message(chat_id, T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
+        # Меню + постоянные быстрые кнопки
+        await context.bot.send_message(chat_id, T[lang]["start_where"],
+                                       reply_markup=kb_merge(inline_topic_kb(lang), quick_actions_kb(lang)))
         return
     key = MINI_KEYS[step_idx]
     label = MINI_STEPS[key]["label"][lang]
@@ -581,46 +562,30 @@ def is_duplicate_question(uid: int, text: str, thresh: float = 0.93) -> bool:
         s["asked_prompts"] = asked[-16:]
     return False
 
-
-# ====== QUICK ACTIONS FOOTER (ВСЕГДА ДОСТУПЕН) ======
+# === Quick Actions row (везде доступны) ===
 def quick_actions_kb(lang: str) -> InlineKeyboardMarkup:
     labels = {
-        "ru": [("⚡ Здоровье за 60 сек", "qa|h60"),
-               ("🚑 Срочно в скорую", "qa|er"),
-               ("🧪 Лаборатория", "qa|lab"),
-               ("⏰ Напоминание", "qa|rem")],
-        "uk": [("⚡ Здоровʼя за 60 сек", "qa|h60"),
-               ("🚑 Терміново", "qa|er"),
-               ("🧪 Лабораторія", "qa|lab"),
-               ("⏰ Нагадування", "qa|rem")],
-        "en": [("⚡ Health in 60s", "qa|h60"),
-               ("🚑 Emergency", "qa|er"),
-               ("🧪 Lab", "qa|lab"),
-               ("⏰ Reminder", "qa|rem")],
-        "es": [("⚡ Salud en 60s", "qa|h60"),
-               ("🚑 Urgente", "qa|er"),
-               ("🧪 Laboratorio", "qa|lab"),
-               ("⏰ Recordatorio", "qa|rem")],
-    }[lang]
-    row = [InlineKeyboardButton(t, callback_data=cb) for t, cb in labels]
-    return InlineKeyboardMarkup([row[:2], row[2:]])
+        "ru": [("⚡ 60 сек", "qa|h60"), ("🚑 Срочно", "qa|er"), ("🧪 Лаборатория", "qa|lab"), ("⏰ Напоминание", "qa|rem")],
+        "uk": [("⚡ 60 сек", "qa|h60"), ("🚑 Терміново", "qa|er"), ("🧪 Лабораторія", "qa|lab"), ("⏰ Нагадування", "qa|rem")],
+        "en": [("⚡ Health60", "qa|h60"), ("🚑 Emergency", "qa|er"), ("🧪 Lab", "qa|lab"), ("⏰ Reminder", "qa|rem")],
+        "es": [("⚡ 60s Salud", "qa|h60"), ("🚑 Urgencias", "qa|er"), ("🧪 Laboratorio", "qa|lab"), ("⏰ Recordatorio", "qa|rem")],
+    }
+    row = [InlineKeyboardButton(txt, callback_data=cb) for txt, cb in labels.get(lang, labels["en"])]
+    return InlineKeyboardMarkup([row])
 
-def _kb_rows(kb: Optional[InlineKeyboardMarkup]) -> List[List[InlineKeyboardButton]]:
-    if kb and getattr(kb, "inline_keyboard", None):
-        return kb.inline_keyboard
-    return []
-
-def with_quick_footer(kb: Optional[InlineKeyboardMarkup], lang: str) -> InlineKeyboardMarkup:
-    rows = _kb_rows(kb) + _kb_rows(quick_actions_kb(lang))
+def kb_merge(base: Optional[InlineKeyboardMarkup], extra: Optional[InlineKeyboardMarkup]) -> Optional[InlineKeyboardMarkup]:
+    if not base and not extra:
+        return None
+    rows = []
+    if base:  rows.extend(base.inline_keyboard)
+    if extra: rows.extend(extra.inline_keyboard)
     return InlineKeyboardMarkup(rows)
 
-
 async def send_unique(msg_obj, uid: int, text: str, reply_markup=None, force: bool = False):
-    """Приклеиваем футер к любому уникальному сообщению."""
     if force or not is_duplicate_question(uid, text):
         lang = _user_lang(uid)
-        final_kb = with_quick_footer(reply_markup, lang)
-        await msg_obj.reply_text(text, reply_markup=final_kb)
+        qa = quick_actions_kb(lang)
+        await msg_obj.reply_text(text, reply_markup=kb_merge(reply_markup, qa))
 
 
 # -------- Sheets (with memory fallback) --------
@@ -692,7 +657,7 @@ def _sheets_init():
             "user_id","sex","age","goal","goals","conditions","meds","allergies",
             "sleep","activity","diet","diet_focus","steps_target","habits",
             "cycle_enabled","cycle_last_date","cycle_avg_len","last_cycle_tip_date",
-            "quiet_hours","consent_flags","notes","updated_at","symptom_counts"
+            "quiet_hours","consent_flags","notes","updated_at"
         ])
         ws_episodes = _ensure_ws("Episodes", ["episode_id","user_id","topic","started_at","baseline_severity","red_flags",
                                               "plan_accepted","target","reminder_at","next_checkin_at","status","last_update","notes"])
@@ -1109,7 +1074,6 @@ async def job_checkin_episode(context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(u.get("lang") or "en")
     kb = inline_numbers_0_10()
     try:
-        # футер добавим во второй части через with_quick_footer (см. job_daily_checkin)
         await context.bot.send_message(uid, T[lang]["checkin_ping"], reply_markup=kb)
         episode_set(eid, "next_checkin_at", "")
     except Exception as e:
@@ -1276,53 +1240,6 @@ def _cycle_phase(last_date_str: str, avg_len: int) -> Optional[str]:
         return None
 
 
-# ====== ПОВТОР СИМПТОМОВ → «ТРИГГЕРЫ» ======
-SYMPTOM_MAP = {
-    "headache": ["голова", "мигрень", "headache", "migraine"],
-    "throat":   ["горло", "ангина", "throat", "sore throat"],
-    "belly":    ["живот", "колит", "желудок", "stomach", "belly", "abdomen"],
-    "fatigue":  ["устал", "усталость", "вялость", "fatigue", "tired"],
-    "back":     ["спина", "поясница", "back"],
-}
-
-def _symptom_key(text: str) -> Optional[str]:
-    low = (text or "").lower()
-    for k, kws in SYMPTOM_MAP.items():
-        if any(w in low for w in kws):
-            return k
-    return None
-
-def _log_symptom(uid: int, text: str):
-    key = _symptom_key(text)
-    if not key:
-        return
-    prof = profiles_get(uid) or {}
-    counts = {}
-    try:
-        counts = json.loads(prof.get("symptom_counts") or "{}")
-    except Exception:
-        counts = {}
-    counts[key] = int(counts.get(key, 0)) + 1
-    profiles_upsert(uid, {"symptom_counts": json.dumps(counts, ensure_ascii=False)})
-
-def maybe_trigger_tip(lang: str, uid: int) -> Optional[str]:
-    prof = profiles_get(uid) or {}
-    try:
-        counts = json.loads(prof.get("symptom_counts") or "{}")
-    except Exception:
-        counts = {}
-    repeated = [k for k, v in counts.items() if v >= 3]
-    if not repeated:
-        return None
-    tip = {
-        "ru": "Вижу повторяющийся симптом. Хотите мягко поотслеживать триггеры (сон, кофеин, стресс)?",
-        "uk": "Бачу повторюваний симптом. Відстежимо тригери (сон, кофеїн, стрес)?",
-        "en": "I notice a recurring symptom. Track gentle triggers (sleep, caffeine, stress)?",
-        "es": "Veo un síntoma recurrente. ¿Seguimos desencadenantes (sueño, cafeína, estrés)?",
-    }[_user_lang(uid)]
-    return tip
-
-
 # --------- UI helpers ----------
 def inline_numbers_0_10()->InlineKeyboardMarkup:
     row = [InlineKeyboardButton(str(i), callback_data=f"num|{i}") for i in range(0,11)]
@@ -1369,7 +1286,8 @@ def register_intake_pro(app, **kwargs):
                 logging.error(f"ipro save error: {e}")
             context.user_data[GATE_FLAG_KEY] = True
             try:
-                await context.bot.send_message(chat_id, T[_user_lang(uid)]["start_where"], reply_markup=inline_topic_kb(_user_lang(uid)))
+                await context.bot.send_message(chat_id, T[_user_lang(uid)]["start_where"],
+                                               reply_markup=kb_merge(inline_topic_kb(_user_lang(uid)), quick_actions_kb(_user_lang(uid))))
             except Exception as e:
                 logging.error(f"ipro follow-up send error: {e}")
             state.clear(); state.update({"active": False})
@@ -1447,8 +1365,6 @@ def register_intake_pro(app, **kwargs):
     # ВАЖНО: паттерн должен ловить 'intake|...' (без двоеточия!)
     app.add_handler(CallbackQueryHandler(ipro_cb, pattern=r"^intake"), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ipro_text), group=1)
-
-
 # ------------- LLM Router (with personalization) -------------
 SYS_ROUTER = (
     "You are TendAI — a concise, warm, professional health & longevity assistant (not a doctor). "
@@ -1562,118 +1478,27 @@ def health60_make_plan(lang: str, symptom_text: str, profile: dict) -> str:
     except Exception as e:
         logging.error(f"health60 LLM error: {e}")
         return fallback
-
-
-# ------------- Commands -------------
-async def post_init(app):
-    me = await app.bot.get_me()
-    logging.info(f"BOT READY: @{me.username} (id={me.id})")
-    try:
-        schedule_from_sheet_on_start(app)
-    except Exception as e:
-        logging.warning(f"schedule_from_sheet_on_start failed: {e}")
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = norm_lang(getattr(user, "language_code", None))
-    users_upsert(user.id, user.username or "", lang)
-    context.user_data["lang"] = lang
-    sessions.setdefault(user.id, {})["last_user_text"] = "/start"
-    update_last_seen(user.id)
-
-    await update.message.reply_text(T[lang]["welcome"], reply_markup=ReplyKeyboardRemove())
-
-    prof = profiles_get(user.id)
-    if profile_is_incomplete(prof):
-        await start_mini_intake(context, update.effective_chat.id, lang, user.id)
+# ---------- Quick actions (всегда доступные) ----------
+def quick_actions_kb(lang: str) -> InlineKeyboardMarkup:
+    if lang == "ru":
+        b1, b2, b3, b4 = "⚡ Здоровье за 60 сек", "🚑 Срочно в скорую", "🧪 Лаборатория", "⏰ Напоминание"
+    elif lang == "uk":
+        b1, b2, b3, b4 = "⚡ Здоров’я за 60 с", "🚑 Терміново в швидку", "🧪 Лабораторія", "⏰ Нагадування"
+    elif lang == "es":
+        b1, b2, b3, b4 = "⚡ Salud en 60 s", "🚑 Urgencias", "🧪 Laboratorio", "⏰ Recordatorio"
     else:
-        await update.message.reply_text(T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
+        b1, b2, b3, b4 = "⚡ Health in 60s", "🚑 Emergency", "🧪 Lab", "⏰ Reminder"
 
-    u = users_get(user.id)
-    if (u.get("consent") or "").lower() not in {"yes","no"}:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["yes"], callback_data="consent|yes"),
-                                    InlineKeyboardButton(T[lang]["no"], callback_data="consent|no")]])
-        await update.message.reply_text(T[lang]["ask_consent"], reply_markup=kb)
-
-    tz_off = int(str(u.get("tz_offset") or "0"))
-    hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
-    if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)
-        eh = (u.get("evening_hour") or "").strip()
-        if eh:
-            schedule_evening_checkin(context.application, user.id, tz_off, eh, lang)
-    else:
-        logging.warning("JobQueue not available on /start – daily/evening check-in not scheduled.")
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = norm_lang(users_get(update.effective_user.id).get("lang") or "en")
-    update_last_seen(update.effective_user.id)
-    await update.message.reply_text(T[lang]["help"])
-
-async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = norm_lang(users_get(update.effective_user.id).get("lang") or "en")
-    update_last_seen(update.effective_user.id)
-    await update.message.reply_text(T[lang]["privacy"])
-
-async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id; users_set(uid, "paused", "yes")
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    update_last_seen(uid)
-    await update.message.reply_text(T[lang]["paused_on"])
-
-async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id; users_set(uid, "paused", "no")
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    update_last_seen(uid)
-    await update.message.reply_text(T[lang]["paused_off"])
-
-async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    update_last_seen(uid)
-    if SHEETS_ENABLED:
-        vals = ws_users.get_all_values()
-        for i in range(2, len(vals)+1):
-            if ws_users.cell(i,1).value == str(uid):
-                ws_users.delete_rows(i); break
-        try:
-            vals = ws_profiles.get_all_values()
-            idxs = []
-            for i in range(2, len(vals)+1):
-                if ws_profiles.cell(i,1).value == str(uid):
-                    idxs.append(i)
-            for shift, i in enumerate(idxs):
-                ws_profiles.delete_rows(i - shift)
-        except Exception:
-            pass
-    else:
-        MEM_USERS.pop(uid, None); MEM_PROFILES.pop(uid, None)
-        global MEM_EPISODES, MEM_REMINDERS, MEM_DAILY
-        MEM_EPISODES = [r for r in MEM_EPISODES if r["user_id"]!=str(uid)]
-        MEM_REMINDERS = [r for r in MEM_REMINDERS if r["user_id"]!=str(uid)]
-        MEM_DAILY = [r for r in MEM_DAILY if r["user_id"]!=str(uid)]
-    lang = norm_lang(getattr(update.effective_user,"language_code",None))
-    await update.message.reply_text(T[lang]["deleted"], reply_markup=ReplyKeyboardRemove())
+    rows = [
+        [InlineKeyboardButton(b1, callback_data="qa|h60"),
+         InlineKeyboardButton(b2, callback_data="qa|er")],
+        [InlineKeyboardButton(b3, callback_data="qa|lab"),
+         InlineKeyboardButton(b4, callback_data="qa|rem")]
+    ]
+    return InlineKeyboardMarkup(rows)
 
 
-# ---------- Helpers for daily/evening ----------
-def _schedule_oneoff_with_sheet(context: ContextTypes.DEFAULT_TYPE, uid: int, when_local: datetime, text: str):
-    qh = _user_quiet_hours(uid)
-    adjusted_local = adjust_out_of_quiet(when_local, qh)
-    when_utc = local_to_utc_dt(uid, adjusted_local)
-    rid = reminder_add(uid, text, when_utc)
-    if _has_jq_ctx(context):
-        delay = max(60, (when_utc - utcnow()).total_seconds())
-        try:
-            context.application.job_queue.run_once(job_oneoff_reminder, when=delay, data={"user_id":uid,"reminder_id":rid})
-        except Exception as e:
-            logging.error(f"run_once failed: {e}")
-    return adjusted_local
-
-def _format_hhmm(dt: datetime) -> str:
-    return dt.strftime("%H:%M")
-
-
-# ---------- Daily Check-in job (обновлённая версия во 2-й части) ----------
+# ---------- Уточнённый утренний чек-ин (с быстрыми кнопками) ----------
 async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
     d = context.job.data or {}
     uid = d.get("user_id"); lang = norm_lang((d.get("lang") or "en"))
@@ -1684,292 +1509,30 @@ async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
         return
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(T[lang]["gm_excellent"], callback_data="gm|mood|excellent")],
-        [InlineKeyboardButton(T[lang]["gm_ok"],        callback_data="gm|mood|ok")],
-        [InlineKeyboardButton(T[lang]["gm_tired"],     callback_data="gm|mood|tired")],
-        [InlineKeyboardButton(T[lang]["gm_pain"],      callback_data="gm|mood|pain")],
-        [InlineKeyboardButton(T[lang]["gm_skip"],      callback_data="gm|skip")],
-    ])
-    try:
-        # Футер прикрутим во 2-й части, чтобы не дублировать код до определения with_quick_footer (уже определён)
-        await context.bot.send_message(uid, T[lang]["daily_gm"], reply_markup=with_quick_footer(kb, lang))
-    except Exception as e:
-        logging.error(f"job_daily_checkin send error: {e}")
-
-
-# ---------- /profile ----------
-async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = _user_lang(uid)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🧩 Start intake" if lang=="en" else "🧩 Начать опрос",
-                                                      callback_data="intake:start")]])
-    await update.message.reply_text(T[lang]["profile_intro"], reply_markup=kb)
-
-
-# ---------- /settz ----------
-async def cmd_settz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = _user_lang(uid)
-    txt = (update.message.text or "").strip()
-    m = re.search(r"(-?\+?\d{1,2})", txt)
-    if not m:
-        await update.message.reply_text("Usage: /settz +2  |  Пример: /settz +3")
-        return
-    try:
-        off = int(m.group(1))
-        off = max(-12, min(14, off))
-        users_set(uid, "tz_offset", str(off))
-        await update.message.reply_text(f"UTC offset set: {off:+d}")
-        u = users_get(uid)
-        hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
-        if _has_jq_ctx(context):
-            schedule_daily_checkin(context.application, uid, off, hhmm, lang)
-    except Exception as e:
-        logging.error(f"/settz error: {e}")
-        await update.message.reply_text("Failed to set timezone offset.")
-
-# ---------- /checkin_on /checkin_off ----------
-async def cmd_checkin_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = _user_lang(uid)
-    txt = (update.message.text or "").strip()
-    m = re.search(r"([01]?\d|2[0-3]):([0-5]\d)", txt)
-    hhmm = m.group(0) if m else DEFAULT_CHECKIN_LOCAL
-    users_set(uid, "checkin_hour", hhmm)
-    users_set(uid, "paused", "no")
-    if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, uid, _user_tz_off(uid), hhmm, lang)
-    await update.message.reply_text(f"Daily check-in set to {hhmm} (local).")
-
-async def cmd_checkin_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if _has_jq_ctx(context):
-        for j in context.application.job_queue.get_jobs_by_name(f"daily_{uid}"):
-            j.schedule_removal()
-    users_set(uid, "paused", "yes")
-    await update.message.reply_text("Daily check-in disabled.")
-
-# ---------- Lang switches ----------
-async def cmd_lang_ru(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users_set(update.effective_user.id, "lang", "ru")
-    context.user_data["lang"] = "ru"
-    await update.message.reply_text("Язык: русский.")
-
-async def cmd_lang_en(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users_set(update.effective_user.id, "lang", "en")
-    context.user_data["lang"] = "en"
-    await update.message.reply_text("Language set: English.")
-
-async def cmd_lang_uk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users_set(update.effective_user.id, "lang", "uk")
-    context.user_data["lang"] = "uk"
-    await update.message.reply_text("Мова: українська.")
-
-async def cmd_lang_es(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users_set(update.effective_user.id, "lang", "es")
-    context.user_data["lang"] = "es"
-    await update.message.reply_text("Idioma: español (beta).")
-
-
-# ---------- Health60 ----------
-async def cmd_health60(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = _user_lang(uid)
-    sessions.setdefault(uid, {})["awaiting_h60_text"] = True
-    await update.message.reply_text(T[lang]["h60_intro"], reply_markup=with_quick_footer(None, lang))
-
-async def _process_health60(uid: int, lang: str, text: str, msg_obj):
-    prof = profiles_get(uid) or {}
-    prefix = personalized_prefix(lang, prof)
-    plan = health60_make_plan(lang, text, prof)
-    final = (prefix + "\n" if prefix else "") + plan
-
-    # логируем симптом и предлагаем трекинг триггеров при повторе
-    _log_symptom(uid, text)
-    extra = maybe_trigger_tip(lang, uid)
-    if extra:
-        final = f"{final}\n\n{extra}"
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(T[lang]["accept_opts"][0], callback_data="h60|accept|yes"),
-         InlineKeyboardButton(T[lang]["accept_opts"][1], callback_data="h60|accept|later"),
-         InlineKeyboardButton(T[lang]["accept_opts"][2], callback_data="h60|accept|no")],
-        [InlineKeyboardButton(T[lang]["act_rem_4h"],  callback_data="h60|rem|4h"),
-         InlineKeyboardButton(T[lang]["act_rem_eve"], callback_data="h60|rem|eve"),
-         InlineKeyboardButton(T[lang]["act_rem_morn"],callback_data="h60|rem|morn")],
-        [InlineKeyboardButton(T[lang]["act_save_episode"], callback_data="h60|episode|save"),
-         InlineKeyboardButton(T[lang]["act_ex_neck"],      callback_data="h60|neck"),
-         InlineKeyboardButton(T[lang]["act_er"],           callback_data="h60|er")]
-    ])
-    await msg_obj.reply_text(final, reply_markup=with_quick_footer(kb, lang))
-# === ENHANCEMENTS / PART 2 ====================================================
-# Доп. правки к словарю переводов (фикс опечатки {т}->{t})
-try:
-    if T["ru"]["evening_set"].find("{т}") != -1:
-        T["ru"]["evening_set"] = "Вечерний чек-ин установлен на {t} (локально)."
-except Exception:
-    pass
-
-
-# ---------- Quick actions (⚡ / 🚑 / 🧪 / ⏰) ----------
-def quick_actions_kb(lang: str) -> InlineKeyboardMarkup:
-    # Короткие подписи, чтобы влезало на мобильном
-    labels = {
-        "ru": ["⚡ 60 сек", "🚑 В скорую", "🧪 Лаб", "⏰ Напомнить"],
-        "uk": ["⚡ 60 с", "🚑 У швидку", "🧪 Лаб", "⏰ Нагадати"],
-        "es": ["⚡ 60s", "🚑 Urgencias", "🧪 Lab", "⏰ Recordar"],
-        "en": ["⚡ 60s", "🚑 ER", "🧪 Lab", "⏰ Reminder"],
-    }[lang if lang in labels else "en"]
-    row = [
-        InlineKeyboardButton(labels[0], callback_data="qa|h60"),
-        InlineKeyboardButton(labels[1], callback_data="qa|er"),
-        InlineKeyboardButton(labels[2], callback_data="qa|lab"),
-        InlineKeyboardButton(labels[3], callback_data="qa|rem"),
-    ]
-    return InlineKeyboardMarkup([row])
-
-def _append_quick(markup: Optional[InlineKeyboardMarkup], lang: str) -> InlineKeyboardMarkup:
-    """Добавляет ряд быстрых действий к существующей inline-клавиатуре."""
-    q = quick_actions_kb(lang).inline_keyboard[0]
-    if markup is None:
-        return InlineKeyboardMarkup([q])
-    base = list(markup.inline_keyboard or [])
-    base.append(q)
-    return InlineKeyboardMarkup(base)
-
-
-# ---------- Life metrics (игровые метрики жизни) ----------
-def _life_metrics_text(lang: str, age_years: int) -> Optional[str]:
-    if age_years <= 0:
-        return None
-    # Приблизительно, без ДР: берём возраст * 365.25
-    days = int(age_years * 365.25)
-    target = 36500  # 100 лет
-    pct = max(0, min(100, int(round(days * 100.0 / target))))
-    # Текстовый прогресс-бар 10 сегментов
-    filled = max(0, min(10, int(round(pct / 10.0))))
-    bar = "█" * filled + "░" * (10 - filled)
-
-    if lang == "ru":
-        return f"Сегодня примерно твой {days}-й день жизни 🎉\nПрогресс к 100 годам: {bar} {pct}%"
-    if lang == "uk":
-        return f"Сьогодні приблизно твій {days}-й день життя 🎉\nПрогрес до 100 років: {bar} {pct}%"
-    if lang == "es":
-        return f"Hoy es aproximadamente tu día {days} de vida 🎉\nProgreso hacia 100 años: {bar} {pct}%"
-    return f"Today is roughly your {days}th day of life 🎉\nProgress to 100 years: {bar} {pct}%"
-
-def _maybe_send_life_metrics(context: ContextTypes.DEFAULT_TYPE, uid: int, lang: str):
-    try:
-        prof = profiles_get(uid) or {}
-        m = re.search(r"\d+", str(prof.get("age") or ""))
-        age = int(m.group(0)) if m else 0
-        if age <= 0:
-            return
-        # Не каждый день, чтобы не утомлять: ~1/3 случаев
-        if random.random() < 0.34:
-            txt = _life_metrics_text(lang, age)
-            if txt:
-                context.application.create_task(context.bot.send_message(uid, txt))
-    except Exception:
-        pass
-
-
-# ---------- Переопределение inline_topic_kb: добавляем быстрые действия ----------
-def inline_topic_kb(lang: str) -> InlineKeyboardMarkup:  # override
-    base = [
-        [InlineKeyboardButton(T[lang]["h60_btn"], callback_data="menu|h60"),
-         InlineKeyboardButton(T[lang]["youth_pack"], callback_data="menu|youth")],
-        [InlineKeyboardButton(T[lang]["gm_energy"], callback_data="menu|energy"),
-         InlineKeyboardButton(T[lang]["hydrate_btn"], callback_data="menu|hydrate")],
-        [InlineKeyboardButton(T[lang]["skintip_btn"], callback_data="menu|skintip"),
-         InlineKeyboardButton(T[lang]["cycle_btn"], callback_data="menu|cycle")],
-    ]
-    # Вставляем быстрые действия первой строкой
-    qa = quick_actions_kb(lang).inline_keyboard[0]
-    return InlineKeyboardMarkup([qa] + base)
-
-
-# ---------- Health60: добавляем быстрые кнопки к плану ----------
-async def _process_health60(uid: int, lang: str, text: str, msg_obj):  # override
-    prof = profiles_get(uid) or {}
-    prefix = personalized_prefix(lang, prof)
-    plan = health60_make_plan(lang, text, prof)
-    final = (prefix + "\n" if prefix else "") + plan
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(T[lang]["accept_opts"][0], callback_data="h60|accept|yes"),
-         InlineKeyboardButton(T[lang]["accept_opts"][1], callback_data="h60|accept|later"),
-         InlineKeyboardButton(T[lang]["accept_opts"][2], callback_data="h60|accept|no")],
-        [InlineKeyboardButton(T[lang]["act_rem_4h"],  callback_data="h60|rem|4h"),
-         InlineKeyboardButton(T[lang]["act_rem_eve"], callback_data="h60|rem|eve"),
-         InlineKeyboardButton(T[lang]["act_rem_morn"],callback_data="h60|rem|morn")],
-        [InlineKeyboardButton(T[lang]["act_save_episode"], callback_data="h60|episode|save"),
-         InlineKeyboardButton(T[lang]["act_ex_neck"],      callback_data="h60|neck"),
-         InlineKeyboardButton(T[lang]["act_er"],           callback_data="h60|er")]
-    ])
-    kb = _append_quick(kb, lang)
-    await msg_obj.reply_text(final, reply_markup=kb)
-
-
-# ---------- Daily Check-in job: добавляем «Пропустить» + быстрые действия + метрики ----------
-async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):  # override
-    d = context.job.data or {}
-    uid = d.get("user_id"); lang = norm_lang((d.get("lang") or "en"))
-    if not uid:
-        return
-    u = users_get(uid)
-    if (u.get("paused") or "").lower() == "yes":
-        return
-
-    # иногда показываем лайф-метрики перед гм-сообщением
-    _maybe_send_life_metrics(context, uid, lang)
-
-    kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(T[lang]["mood_good"], callback_data="gm|mood|good"),
          InlineKeyboardButton(T[lang]["mood_ok"],   callback_data="gm|mood|ok"),
          InlineKeyboardButton(T[lang]["mood_bad"],  callback_data="gm|mood|bad")],
-        [InlineKeyboardButton(T[lang]["mood_note"], callback_data="gm|note"),
-         InlineKeyboardButton("⏭ Пропустить" if lang!="en" else "⏭ Skip", callback_data="gm|skip")]
+        [InlineKeyboardButton(T[lang]["mood_note"], callback_data="gm|note")],
+        [InlineKeyboardButton(T[lang]["gm_evening_btn"], callback_data="youth:gm_evening")],
+        # Быстрые действия — всегда под рукой
+        [InlineKeyboardButton("⚡", callback_data="qa|h60"),
+         InlineKeyboardButton("🚑", callback_data="qa|er"),
+         InlineKeyboardButton("🧪", callback_data="qa|lab"),
+         InlineKeyboardButton("⏰", callback_data="qa|rem")]
     ])
-    kb = _append_quick(kb, lang)
     try:
         await context.bot.send_message(uid, T[lang]["daily_gm"], reply_markup=kb)
     except Exception as e:
         logging.error(f"job_daily_checkin send error: {e}")
 
 
-# ---------- Evening Check-in job: добавляем быстрые действия ----------
-async def job_evening_checkin(context: ContextTypes.DEFAULT_TYPE):  # override
-    d = context.job.data or {}
-    uid = d.get("user_id"); lang = norm_lang((d.get("lang") or "en"))
-    if not uid:
-        return
-    u = users_get(uid)
-    if (u.get("paused") or "").lower() == "yes":
-        return
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(T[lang]["evening_tip_btn"], callback_data="youth:tip")],
-        [InlineKeyboardButton("0", callback_data="num|0"),
-         InlineKeyboardButton("3", callback_data="num|3"),
-         InlineKeyboardButton("6", callback_data="num|6"),
-         InlineKeyboardButton("8", callback_data="num|8"),
-         InlineKeyboardButton("10", callback_data="num|10")]
-    ])
-    kb = _append_quick(kb, lang)
-    try:
-        await context.bot.send_message(uid, T[lang]["evening_intro"], reply_markup=kb)
-    except Exception as e:
-        logging.error(f"job_evening_checkin send error: {e}")
-
-
-# ---------- Callback Query Handler: доп. ветки для quick actions ----------
-async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):  # override
+# ---------- Callback Query Handler (дополнен qa|...) ----------
+async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
     lang = _user_lang(uid)
     data = (q.data or "")
-    s = sessions.setdefault(uid, {})
 
     # Gate skip
     if data == "gate:skip":
@@ -1990,12 +1553,12 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):  # ove
             value = rest[0] if rest else ""
             mini_handle_choice(uid, key, value)
         elif action == "skip":
-            s2 = sessions.setdefault(uid, {"mini_active": True, "mini_step": 0, "mini_answers": {}})
-            s2["mini_step"] = int(s2.get("mini_step", 0)) + 1
+            s = sessions.setdefault(uid, {"mini_active": True, "mini_step": 0, "mini_answers": {}})
+            s["mini_step"] = int(s.get("mini_step", 0)) + 1
         await ask_next_mini(context, update.effective_chat.id, lang, uid)
         return
 
-    # Меню (быстрые действия + разделы)
+    # Главные меню-кнопки
     if data.startswith("menu|"):
         act = data.split("|",1)[1]
         if act == "h60":
@@ -2003,7 +1566,7 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):  # ove
             await context.bot.send_message(uid, T[lang]["h60_intro"], reply_markup=quick_actions_kb(lang))
         elif act == "energy":
             row = [InlineKeyboardButton(str(i), callback_data=f"energy|rate|{i}") for i in range(1,6)]
-            kb = _append_quick(InlineKeyboardMarkup([row]), lang)
+            kb = InlineKeyboardMarkup([row])
             await context.bot.send_message(uid, T[lang]["gm_energy_q"], reply_markup=kb)
         elif act == "hydrate":
             tip = T[lang]["hydrate_nudge"]
@@ -2018,7 +1581,6 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):  # ove
         elif act == "cycle":
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["yes"], callback_data="cycle|consent|yes"),
                                         InlineKeyboardButton(T[lang]["no"],  callback_data="cycle|consent|no")]])
-            kb = _append_quick(kb, lang)
             await context.bot.send_message(uid, T[lang]["cycle_consent"], reply_markup=kb)
         elif act == "youth":
             kb = InlineKeyboardMarkup([
@@ -2029,8 +1591,28 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):  # ove
                 [InlineKeyboardButton(T[lang]["set_quiet_btn"], callback_data="youth:set_quiet"),
                  InlineKeyboardButton(T[lang]["challenge_btn"], callback_data="youth:challenge")]
             ])
-            kb = _append_quick(kb, lang)
             await context.bot.send_message(uid, T[lang]["youth_pack"], reply_markup=kb)
+        return
+
+    # Быстрые действия qa|...
+    if data.startswith("qa|"):
+        kind = data.split("|", 1)[1]
+        if kind == "h60":
+            sessions.setdefault(uid, {})["awaiting_h60_text"] = True
+            await context.bot.send_message(uid, T[lang]["h60_intro"], reply_markup=quick_actions_kb(lang))
+        elif kind == "er":
+            await context.bot.send_message(uid, T[lang]["er_text"], reply_markup=quick_actions_kb(lang))
+        elif kind == "lab":
+            sessions.setdefault(uid, {})["await_lab_city"] = True
+            await context.bot.send_message(uid, T[lang]["act_city_prompt"])
+        elif kind == "rem":
+            kb = InlineKeyboardMarkup([  # используем существующие обработчики h60|rem|...
+                [InlineKeyboardButton(T[lang]["remind_opts"][0], callback_data="h60|rem|4h")],
+                [InlineKeyboardButton(T[lang]["remind_opts"][1], callback_data="h60|rem|eve")],
+                [InlineKeyboardButton(T[lang]["remind_opts"][2], callback_data="h60|rem|morn")],
+                [InlineKeyboardButton(T[lang]["remind_opts"][3], callback_data="h60|rem|none")]
+            ])
+            await context.bot.send_message(uid, T[lang]["remind_when"], reply_markup=kb)
         return
 
     # Health60 actions
@@ -2038,7 +1620,7 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):  # ove
         parts = data.split("|")
         sub = parts[1] if len(parts)>1 else ""
         if sub == "accept":
-            await q.edit_message_reply_markup(quick_actions_kb(lang))
+            await q.edit_message_reply_markup(None)
             await context.bot.send_message(uid, T[lang]["thanks"], reply_markup=quick_actions_kb(lang))
         elif sub == "rem":
             opt = parts[2] if len(parts)>2 else ""
@@ -2081,42 +1663,31 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):  # ove
             await context.bot.send_message(uid, T[lang]["er_text"], reply_markup=quick_actions_kb(lang))
         return
 
-    # Daily GM actions (+ новый «пропустить»)
+    # Daily GM actions
     if data.startswith("gm|"):
         _, kind, *rest = data.split("|")
         if kind == "mood":
             mood = rest[0] if rest else "ok"
             daily_add(iso(utcnow()), uid, mood=mood, comment="")
-            # инкремент челенджа, если активен
-            try:
-                ch = challenge_get(uid)
-                if ch:
-                    d_done = challenge_inc(uid)
-                    await context.bot.send_message(uid, T[lang]["challenge_progress"].format(d=d_done, len=ch.get("length_days","7")))
-            except Exception:
-                pass
-            await q.edit_message_reply_markup(quick_actions_kb(lang))
+            await q.edit_message_reply_markup(None)
             await context.bot.send_message(uid, T[lang]["mood_thanks"], reply_markup=quick_actions_kb(lang))
         elif kind == "note":
             sessions.setdefault(uid, {})["await_gm_note"] = True
             await q.edit_message_text(T[lang]["fb_write"])
-        elif kind == "skip":
-            await q.edit_message_reply_markup(quick_actions_kb(lang))
-            await context.bot.send_message(uid, T[lang]["thanks"], reply_markup=quick_actions_kb(lang))
         return
 
-    # Энергия (оценка)
+    # Energy rating
     if data.startswith("energy|rate|"):
         try:
             val = int(data.split("|")[-1])
         except:
             val = None
         daily_add(iso(utcnow()), uid, mood="", comment="energy", energy=val)
-        await q.edit_message_reply_markup(quick_actions_kb(lang))
+        await q.edit_message_reply_markup(None)
         await context.bot.send_message(uid, T[lang]["gm_energy_done"], reply_markup=quick_actions_kb(lang))
         return
 
-    # Youth pack
+    # Youth pack shortcuts
     if data.startswith("youth:"):
         act = data.split(":",1)[1]
         if act == "gm_evening":
@@ -2156,8 +1727,8 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):  # ove
     # Mini-intake free text trigger
     if data.startswith("mini|write|"):
         key = data.split("|",2)[2]
-        s2 = sessions.setdefault(uid, {"mini_active": True, "mini_step": 0, "mini_answers": {}})
-        s2["mini_wait_key"] = key
+        s = sessions.setdefault(uid, {"mini_active": True, "mini_step": 0, "mini_answers": {}})
+        s["mini_wait_key"] = key
         await q.edit_message_text(T[lang]["write"] + "…")
         return
 
@@ -2183,47 +1754,25 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):  # ove
         kind = data.split("|")[1]
         if kind in {"good","bad"}:
             feedback_add(iso(utcnow()), uid, name="", username=users_get(uid).get("username",""), rating=("1" if kind=="bad" else "5"), comment="")
-            await q.edit_message_reply_markup(quick_actions_kb(lang))
+            await q.edit_message_reply_markup(None)
             await context.bot.send_message(uid, T[lang]["fb_thanks"], reply_markup=quick_actions_kb(lang))
         elif kind == "free":
             sessions.setdefault(uid, {})["await_fb_msg"] = True
             await q.edit_message_text(T[lang]["fb_write"])
         return
 
-    # Quick actions (новые)
-    if data.startswith("qa|"):
-        qa = data.split("|",1)[1]
-        if qa == "h60":
-            sessions.setdefault(uid, {})["awaiting_h60_text"] = True
-            await context.bot.send_message(uid, T[lang]["h60_intro"], reply_markup=quick_actions_kb(lang))
-        elif qa == "er":
-            await context.bot.send_message(uid, T[lang]["er_text"], reply_markup=quick_actions_kb(lang))
-        elif qa == "lab":
-            sessions.setdefault(uid, {})["await_lab_city"] = True
-            await context.bot.send_message(uid, T[lang]["act_city_prompt"])
-        elif qa == "rem":
-            sessions.setdefault(uid, {})["await_rem_hhmm"] = True
-            ask = {
-                "ru": "Напишите время напоминания как ЧЧ:ММ (локально), напр. 14:30",
-                "uk": "Напишіть час нагадування як ГГ:ХХ (локально), напр. 14:30",
-                "es": "Escribe la hora HH:MM (local), p. ej. 14:30",
-                "en": "Type reminder time as HH:MM (local), e.g., 14:30",
-            }[lang]
-            await context.bot.send_message(uid, ask)
-        return
 
-
-# ---------- General text handler: автозапуск мини-опроса + новые флаги ----------
-async def msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):  # override
+# ---------- Сообщения: мягкий опросник на первом сообщении + быстрые кнопки ----------
+async def msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     lang = _user_lang(uid)
     text = (update.message.text or "").strip()
     update_last_seen(uid)
     s = sessions.setdefault(uid, {})
 
-    # Если профиль пуст — мягкий запуск мини-опроса сразу после первого сообщения
-    prof = profiles_get(uid) or {}
-    if profile_is_incomplete(prof) and not s.get("mini_active") and not s.get("ipro", {}).get("active"):
+    # Если профиль ещё пустой — запускаем мини-опросник сразу, без команд
+    prof_now = profiles_get(uid) or {}
+    if profile_is_incomplete(prof_now) and not s.get("mini_active") and not (s.get("ipro") or {}).get("active"):
         await start_mini_intake(context, update.effective_chat.id, lang, uid)
         return
 
@@ -2278,38 +1827,17 @@ async def msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):  # overr
         await update.message.reply_text(T[lang]["fb_thanks"], reply_markup=quick_actions_kb(lang))
         return
 
-    # NEW: Лаборатория — город
+    # Лаборатория: ожидаем город
     if s.get("await_lab_city"):
-        city = text[:100]
-        profiles_upsert(uid, {"city": city})
+        city = text[:60]
         s["await_lab_city"] = False
-        # На этом этапе просто подтверждаем; интеграцию с внешним поиском можно добавить позже
-        ok = {
-            "ru": f"Записал город: {city}. Подскажу варианты лабораторий рядом (скоро).",
-            "uk": f"Зберіг місто: {city}. Підкажу лабораторії поруч (незабаром).",
-            "es": f"Guardé la ciudad: {city}. Te sugeriré laboratorios cercanos (pronto).",
-            "en": f"Saved city: {city}. I’ll suggest nearby labs (soon).",
+        msg = {
+            "ru": f"🧪 Ок, отмечу: {city}. Я подскажу популярные сети: Синэво/Діла/MedLab (зависит от города). Уточните нужный анализ — подскажу подготовку.",
+            "uk": f"🧪 Добре, відмічаю: {city}. Популярні мережі: Сінево/Діла/MedLab (залежить від міста). Напишіть, який аналіз — підкажу підготовку.",
+            "es": f"🧪 Anotado: {city}. Te puedo sugerir redes comunes según ciudad. Dime qué análisis necesitas y te digo la preparación.",
+            "en": f"🧪 Noted: {city}. I can suggest common lab chains by city. Tell me which test you need and I’ll share prep tips."
         }[lang]
-        await update.message.reply_text(ok, reply_markup=quick_actions_kb(lang))
-        return
-
-    # NEW: Напоминание — HH:MM
-    if s.get("await_rem_hhmm"):
-        m = re.match(r"^\s*([01]?\d|2[0-3]):([0-5]\d)\s*$", text)
-        now_local = user_local_now(uid)
-        if m:
-            hh, mm = int(m.group(1)), int(m.group(2))
-            target = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
-            if target <= now_local:
-                target += timedelta(days=1)
-        else:
-            # если не удалось распознать — по умолчанию через 4 часа
-            target = now_local + timedelta(hours=4)
-        adj = _schedule_oneoff_with_sheet(context, uid, target, T[lang]["thanks"])
-        s["await_rem_hhmm"] = False
-        # Текст подтверждения
-        when_txt = _fmt_reminder_set(lang, adj, kind="evening" if adj.hour >= 16 else "morning")
-        await update.message.reply_text(when_txt, reply_markup=quick_actions_kb(lang))
+        await update.message.reply_text(msg, reply_markup=quick_actions_kb(lang))
         return
 
     # Health60 awaiting
@@ -2321,11 +1849,10 @@ async def msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):  # overr
              InlineKeyboardButton(T[lang]["fb_bad"],  callback_data="fb|bad")],
             [InlineKeyboardButton(T[lang]["fb_free"], callback_data="fb|free")]
         ])
-        kb = _append_quick(kb, lang)
         await update.message.reply_text(T[lang]["ask_fb"], reply_markup=kb)
         return
 
-    # Router default (concise assistant mode) + быстрые кнопки
+    # Основной ассистент (персонализированный)
     prof = profiles_get(uid) or {}
     prefix = personalized_prefix(lang, prof)
     route = llm_router_answer(text, lang, prof)
@@ -2339,8 +1866,8 @@ async def msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):  # overr
     await send_unique(update.message, uid, final, reply_markup=quick_actions_kb(lang))
 
 
-# ---------- Main (без изменений регистрации, функции уже переопределены выше) ----------
-def main():  # override to ensure we bind the latest handlers
+# ---------- Main ----------
+def main():
     if not TELEGRAM_TOKEN:
         logging.error("TELEGRAM_TOKEN is not set")
         return
@@ -2374,8 +1901,7 @@ def main():  # override to ensure we bind the latest handlers
     app.add_handler(CommandHandler("en", cmd_lang_en))
     app.add_handler(CommandHandler("es", cmd_lang_es))
 
-    # General callbacks & messages (после PRO groups 0/1) — используем
-    # ПЕРЕОПРЕДЕЛЁННЫЕ версии cb_handler/msg_text
+    # Callbacks & messages (после PRO групп)
     app.add_handler(CallbackQueryHandler(cb_handler), group=2)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg_text), group=2)
 
