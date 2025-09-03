@@ -259,7 +259,7 @@ T = {
         "ask_quiet": "Введите тихие часы как ЧЧ:ММ-ЧЧ:ММ (локально), напр. 22:00-08:00",
         "evening_intro": "Вечерний чек-ин:",
         "evening_tip_btn": "🪄 Совет дня",
-        "evening_set": "Вечерний чек-ин установлен на {t} (локально).",
+        "evening_set": "Вечерний чек-ин установлен на {т} (локально).",
         "evening_off": "Вечерний чек-ин отключён.",
     },
     "uk": {
@@ -1071,14 +1071,6 @@ async def job_oneoff_reminder(context: ContextTypes.DEFAULT_TYPE):
 
 
 # -------- Rules helpers (evidence-based) --------
-def age_to_band(age: int) -> str:
-    if age <= 0: return "unknown"
-    if age <= 25: return "18–25"
-    if age <= 35: return "26–35"
-    if age <= 45: return "36–45"
-    if age <= 60: return "46–60"
-    return "60+"
-
 def _build_segment(profile: dict) -> str:
     goal = (profile.get("goal") or "").lower()
     sex = (profile.get("sex") or "").lower()
@@ -1346,11 +1338,9 @@ def register_intake_pro(app, **kwargs):
         ipro["step"] = int(ipro.get("step", 0)) + 1
         await _ipro_ask_next(context, update.effective_chat.id, lang, uid, ipro)
 
-    # Зарегистрировать ПЕРЕД общими хэндлерами
-    app.add_handler(CallbackQueryHandler(ipro_cb, pattern=r"^intake:"), group=0)
+    # ВАЖНО: паттерн должен ловить 'intake|...' (без двоеточия!)
+    app.add_handler(CallbackQueryHandler(ipro_cb, pattern=r"^intake"), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ipro_text), group=1)
-
-
 # ------------- LLM Router (with personalization) -------------
 SYS_ROUTER = (
     "You are TendAI — a concise, warm, professional health & longevity assistant (not a doctor). "
@@ -1362,6 +1352,7 @@ SYS_ROUTER = (
     "\"assistant_reply\": \"string\", \"followups\": [\"string\"], \"needs_more\": true, "
     "\"red_flags\": false, \"confidence\": 0.0}"
 )
+
 def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
     if not oai:
         return {"intent":"other","assistant_reply":T[lang]["unknown"],"followups":[],"needs_more":True,"red_flags":False,"confidence":0.3}
@@ -1775,23 +1766,40 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ask_next_mini(context, update.effective_chat.id, lang, uid)
         return
 
-    # Menu quick actions
+    # Menu quick actions (без вызова команд-хэндлеров — отвечаем прямо здесь)
     if data.startswith("menu|"):
         act = data.split("|",1)[1]
-        fake_update = update
         if act == "h60":
             sessions.setdefault(uid, {})["awaiting_h60_text"] = True
             await context.bot.send_message(uid, T[lang]["h60_intro"])
         elif act == "energy":
-            await cmd_energy(fake_update, context)
+            row = [InlineKeyboardButton(str(i), callback_data=f"energy|rate|{i}") for i in range(1,6)]
+            kb = InlineKeyboardMarkup([row])
+            await context.bot.send_message(uid, T[lang]["gm_energy_q"], reply_markup=kb)
         elif act == "hydrate":
-            await cmd_hydrate(fake_update, context)
+            tip = T[lang]["hydrate_nudge"]
+            daily_add(iso(utcnow()), uid, mood="", comment=tip, energy=None)
+            await context.bot.send_message(uid, tip)
         elif act == "skintip":
-            await cmd_skintip(fake_update, context)
+            prof = profiles_get(uid) or {}
+            age = int(re.search(r"\d+", str(prof.get("age") or "0")).group(0)) if re.search(r"\d+", str(prof.get("age") or "")) else 0
+            sex = (prof.get("sex") or "").lower()
+            tip = _get_skin_tip(lang, sex, age)
+            await context.bot.send_message(uid, f"{T[lang]['daily_tip_prefix']} {tip}")
         elif act == "cycle":
-            await cmd_cycle(fake_update, context)
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["yes"], callback_data="cycle|consent|yes"),
+                                        InlineKeyboardButton(T[lang]["no"],  callback_data="cycle|consent|no")]])
+            await context.bot.send_message(uid, T[lang]["cycle_consent"], reply_markup=kb)
         elif act == "youth":
-            await cmd_youth(fake_update, context)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(T[lang]["gm_energy"], callback_data="menu|energy"),
+                 InlineKeyboardButton(T[lang]["hydrate_btn"], callback_data="menu|hydrate")],
+                [InlineKeyboardButton(T[lang]["skintip_btn"], callback_data="menu|skintip"),
+                 InlineKeyboardButton(T[lang]["gm_evening_btn"], callback_data="youth:gm_evening")],
+                [InlineKeyboardButton(T[lang]["set_quiet_btn"], callback_data="youth:set_quiet"),
+                 InlineKeyboardButton(T[lang]["challenge_btn"], callback_data="youth:challenge")]
+            ])
+            await context.bot.send_message(uid, T[lang]["youth_pack"], reply_markup=kb)
         return
 
     # Health60 actions
@@ -1807,23 +1815,15 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if opt == "4h":
                 when_local = now_local + timedelta(hours=4)
                 adj = _schedule_oneoff_with_sheet(context, uid, when_local, T[lang]["thanks"])
-                await context.bot.send_message(uid, f"⏰ Ok, {T[lang]['act_rem_4h'][2
-                await context.bot.send_message(
-                    uid,
-                    _fmt_reminder_set(lang, adj, kind="4h")
-                )
+                await context.bot.send_message(uid, _fmt_reminder_set(lang, adj, kind="4h"))
             elif opt == "eve":
-                # schedule for user-configured evening time (today or tomorrow)
                 eh = users_get(uid).get("evening_hour") or DEFAULT_EVENING_LOCAL
                 (hh, mm) = hhmm_tuple(eh)
                 target = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
                 if target <= now_local:
                     target = target + timedelta(days=1)
                 adj = _schedule_oneoff_with_sheet(context, uid, target, T[lang]["thanks"])
-                await context.bot.send_message(
-                    uid,
-                    _fmt_reminder_set(lang, adj, kind="evening")
-                )
+                await context.bot.send_message(uid, _fmt_reminder_set(lang, adj, kind="evening"))
             elif opt == "morn":
                 mh = users_get(uid).get("checkin_hour") or DEFAULT_CHECKIN_LOCAL
                 (hh, mm) = hhmm_tuple(mh)
@@ -1831,10 +1831,7 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if target <= now_local:
                     target = target + timedelta(days=1)
                 adj = _schedule_oneoff_with_sheet(context, uid, target, T[lang]["thanks"])
-                await context.bot.send_message(
-                    uid,
-                    _fmt_reminder_set(lang, adj, kind="morning")
-                )
+                await context.bot.send_message(uid, _fmt_reminder_set(lang, adj, kind="morning"))
         elif sub == "episode":
             act = parts[2] if len(parts)>2 else ""
             if act == "save":
@@ -1881,7 +1878,6 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("youth:"):
         act = data.split(":",1)[1]
         if act == "gm_evening":
-            # ensure evening time configured
             u = users_get(uid)
             off = _user_tz_off(uid)
             eh = (u.get("evening_hour") or DEFAULT_EVENING_LOCAL)
@@ -2093,7 +2089,6 @@ async def msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if s.get("awaiting_h60_text"):
         s["awaiting_h60_text"] = False
         await _process_health60(uid, lang, text, update.message)
-        # Ask feedback
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(T[lang]["fb_good"], callback_data="fb|good"),
              InlineKeyboardButton(T[lang]["fb_bad"],  callback_data="fb|bad")],
@@ -2124,7 +2119,7 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
     # PRO-intake (group 0/1)
-    register_intake_pro(app)
+    register_intake_pro(app)  # в части 1 исправлен pattern на r"^intake"
 
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
