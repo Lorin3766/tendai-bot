@@ -101,6 +101,7 @@ T = {
         "saved_profile":"Saved: ",
         "start_where":"Where do you want to start now? (symptom/sleep/nutrition/labs/habits/longevity)",
         "daily_gm":"Good morning! Quick daily check-in:",
+        "daily_pm":"Evening check-in: how was your day?",
         "mood_good":"😃 Good","mood_ok":"😐 Okay","mood_bad":"😣 Poor","mood_note":"✍️ Comment",
         "mood_thanks":"Thanks! Have a smooth day 👋",
         "triage_pain_q1":"Where does it hurt?",
@@ -176,6 +177,7 @@ T = {
         "saved_profile":"Сохранил: ",
         "start_where":"С чего начнём? (симптом/сон/питание/анализы/привычки/долголетие)",
         "daily_gm":"Доброе утро! Быстрый чек-ин:",
+        "daily_pm":"Вечерний чек-ин: как прошёл день?",
         "mood_good":"😃 Хорошо","mood_ok":"😐 Нормально","mood_bad":"😣 Плохо","mood_note":"✍️ Комментарий",
         "mood_thanks":"Спасибо! Хорошего дня 👋",
         "triage_pain_q1":"Где болит?",
@@ -225,19 +227,17 @@ T = {
         "energy_title": "Энергия на сегодня:",
         "water_prompt": "Выпей 300–500 мл воды. Напомнить через 2 часа?",
         "skin_title": "Совет для кожи/тела:"
-    },
-    "uk": {
-        **{
-            k: v for k, v in {
-                "help": "Короткі перевірки, план на 24–48 год, нагадування, щоденні чек-іни.\nКоманди: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /health60 /energy /mood /water /skin /ru /uk /en /es",
-                "act_rem_2h": "⏰ Нагадати через 2 год",
-                "energy_title": "Енергія на сьогодні:",
-                "water_prompt": "Випий 300–500 мл води. Нагадати через 2 години?",
-                "skin_title": "Догляд за шкірою/тілом:"
-            }.items()
-        }
     }
 }
+# Наследуем uk от ru и переопределяем отличия
+T["uk"] = {**T["ru"], **{
+    "help": "Короткі перевірки, план на 24–48 год, нагадування, щоденні чек-іни.\nКоманди: /help /privacy /pause /resume /delete_data /profile /checkin_on 08:30 /checkin_off /settz +2 /health60 /energy /mood /water /skin /ru /uk /en /es",
+    "daily_pm":"Вечірній чек-ін: як пройшов день?",
+    "act_rem_2h": "⏰ Нагадати через 2 год",
+    "energy_title": "Енергія на сьогодні:",
+    "water_prompt": "Випий 300–500 мл води. Нагадати через 2 години?",
+    "skin_title": "Догляд за шкірою/тілом:"
+}}
 T["es"] = T["en"]
 
 # ---------------- Helpers ----------------
@@ -477,7 +477,8 @@ def users_upsert(uid: int, username: str, lang: str):
         vals = ws_records(ws_users, USERS_HEADERS)
         for i, r in enumerate(vals, start=2):
             if str(r.get("user_id")) == str(uid):
-                ws_users.update(range_name=f"A{i}:P{i}", values=[[base.get(h,"") for h in USERS_HEADERS]])
+                end_col = gsu.rowcol_to_a1(1, len(USERS_HEADERS)).rstrip("1")
+                ws_users.update(range_name=f"A{i}:{end_col}{i}", values=[[base.get(h,"") for h in USERS_HEADERS]])
                 return
         ws_users.append_row([base.get(h,"") for h in USERS_HEADERS])
     else:
@@ -650,7 +651,7 @@ def schedule_from_sheet_on_start(app):
         tz_off = int(str(u.get("tz_offset") or "0"))
         hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
         schedule_daily_checkin(app, uid, tz_off, hhmm, norm_lang(u.get("lang") or "en"))
-        # вечерний + тихие часы
+        # вечерний (отдельный текст)
         schedule_morning_evening(app, uid, tz_off, norm_lang(u.get("lang") or "en"))
 
 def hhmm_tuple(hhmm:str)->Tuple[int,int]:
@@ -670,17 +671,18 @@ def schedule_daily_checkin(app, uid:int, tz_off:int, hhmm_local:str, lang:str):
     t = dtime(hour=h_utc, minute=m_utc, tzinfo=timezone.utc)
     app.job_queue.run_daily(job_daily_checkin, time=t, name=f"daily_{uid}", data={"user_id":uid,"lang":lang})
 
-# === Утро+Вечер по локальному времени (simple) ===
-def schedule_morning_evening(app, uid:int, tz_off:int, lang:str, morning="08:30", evening="20:30"):
+# === Вечер: отдельный джоб и планировщик только для вечера ===
+def schedule_morning_evening(app, uid:int, tz_off:int, lang:str, evening="20:30"):
     if not _has_jq_app(app): return
-    for name in [f"daily_m_{uid}", f"daily_e_{uid}"]:
-        for j in app.job_queue.get_jobs_by_name(name): j.schedule_removal()
-    h_m, m_m = hhmm_tuple(morning); h_m = (h_m - tz_off) % 24
+    for j in app.job_queue.get_jobs_by_name(f"daily_e_{uid}"):
+        j.schedule_removal()
     h_e, m_e = hhmm_tuple(evening); h_e = (h_e - tz_off) % 24
-    app.job_queue.run_daily(job_daily_checkin, dtime(hour=h_m, minute=m_m, tzinfo=timezone.utc),
-                            name=f"daily_m_{uid}", data={"user_id":uid,"lang":lang})
-    app.job_queue.run_daily(job_daily_checkin, dtime(hour=h_e, minute=m_e, tzinfo=timezone.utc),
-                            name=f"daily_e_{uid}", data={"user_id":uid,"lang":lang})
+    app.job_queue.run_daily(
+        job_evening_checkin,
+        dtime(hour=h_e, minute=m_e, tzinfo=timezone.utc),
+        name=f"daily_e_{uid}",
+        data={"user_id":uid,"lang":lang}
+    )
 
 # ------------- Лимитер авто-сообщений + тихие часы -------------
 def _in_quiet(uid: int, now_utc: datetime) -> bool:
@@ -871,14 +873,13 @@ def cycle_tip(lang: str, phase: str) -> str:
     }
     return base.get(phase, {}).get(lang, "")
 
-# ===== Ежедневный чек-ин: приветствие + питание + цикл =====
 async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
     d = context.job.data or {}
     uid, lang = d.get("user_id"), d.get("lang","en")
     u = users_get(uid)
     if (u.get("paused") or "").lower()=="yes":
         return
-    # приветствие + настроение
+    # приветствие + настроение (утро)
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(T[lang]["mood_good"], callback_data="mood|good"),
          InlineKeyboardButton(T[lang]["mood_ok"], callback_data="mood|ok"),
@@ -900,9 +901,24 @@ async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
         if tip:
             await maybe_send(context, uid, tip)
 
+# Новый вечерний джоб — другой текст
+async def job_evening_checkin(context: ContextTypes.DEFAULT_TYPE):
+    d = context.job.data or {}
+    uid, lang = d.get("user_id"), d.get("lang","en")
+    u = users_get(uid)
+    if (u.get("paused") or "").lower()=="yes":
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(T[lang]["mood_good"], callback_data="mood|good"),
+         InlineKeyboardButton(T[lang]["mood_ok"],   callback_data="mood|ok"),
+         InlineKeyboardButton(T[lang]["mood_bad"],  callback_data="mood|bad")],
+        [InlineKeyboardButton(T[lang]["mood_note"], callback_data="mood|note")]
+    ])
+    await maybe_send(context, uid, T[lang]["daily_pm"], kb)
+
 # ===== Serious keywords =====
 SERIOUS_KWS = {
-    "diabetes":["diabetes","диабет","сахарный","цукров","глюкоза","hba1c","гликированный","глюкоза"],
+    "diabetes":["diabetes","диабет","сахарный","цукров","глюкоза","hba1c","гликированный"],
     "hepatitis":["hepatitis","гепатит","печень hbs","hcv","alt","ast"],
     "cancer":["cancer","рак","онко","онколог","опухол","пухлина","tumor"],
     "tb":["tuberculosis","tb","туберкул","туберкульоз"],
@@ -1148,6 +1164,7 @@ async def cmd_health60(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None))
     sessions.setdefault(uid, {})["awaiting_h60"] = True
     await update.message.reply_text(T[lang]["h60_intro"])
+
 # ===== /intake (кнопка запуска PRO-опроса) =====
 async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1192,8 +1209,8 @@ PROFILE_STEPS = [
                              "es":[("<5k pasos","<5k"),("5–8k","5-8k"),("8–12k","8-12k"),("Deporte regular","sport")]}},
     {"key":"diet","opts":{"ru":[("Сбалансировано","balanced"),("Низкоугл/кето","lowcarb"),("Вегетар/веган","plant"),("Нерегулярно","irregular")],
                           "en":[("Balanced","balanced"),("Low-carb/keto","lowcarb"),("Vegetarian/vegan","plant"),("Irregular","irregular")],
-                          "uk":[("Збалансовано","balanced"),("Маловугл/кето","lowcarb"),("Вегетар/веган","plant"),("Нерегулярно","irregular")],
-                          "es":[("Equilibrada","balanced"),("Baja en carb/keto","lowcarb"),("Vegetariana/vegana","plant"),("Irregular","irregular")]}},
+                          "uk":[("Збалансовано","balanced"),("Маловугл/кето","lowcarb"),("Вегетаріан/веган","plant"),("Нерегулярно","irregular")],
+                          "es":[("Equilibrada","balanced"),("Baja en carb/keto","lowcarb"),("Vegetariana/vegana","plant"),("Irregular","irregular")]}}
 ]
 
 def build_profile_kb(lang:str, key:str, opts:List[Tuple[str,str]])->InlineKeyboardMarkup:
@@ -1361,7 +1378,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for one in (data.get("followups") or [])[:2]:
         await send_unique(update.message, uid, apply_warm_tone(one, lang), force=True)
     return
-
 # ===== Callback handler =====
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1558,8 +1574,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tz_off = int(str(u.get("tz_offset") or "0"))
     hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
     if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)
-        schedule_morning_evening(context.application, user.id, tz_off, lang)
+        schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)  # утро
+        schedule_morning_evening(context.application, user.id, tz_off, lang)     # вечер
     else:
         logging.warning("JobQueue not available on /start – daily check-ins not scheduled.")
 
@@ -1612,8 +1628,8 @@ async def cmd_settz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     off = int(parts[1]); users_set(uid,"tz_offset",str(off))
     hhmm = users_get(uid).get("checkin_hour") or DEFAULT_CHECKIN_LOCAL
     if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, uid, off, hhmm, lang)
-        schedule_morning_evening(context.application, uid, off, lang)
+        schedule_daily_checkin(context.application, uid, off, hhmm, lang)  # утро
+        schedule_morning_evening(context.application, uid, off, lang)      # вечер
     await update.message.reply_text({"ru":f"Сдвиг часового пояса: {off}ч",
                                      "uk":f"Зсув: {off} год",
                                      "en":f"Timezone offset: {off}h",
@@ -1630,8 +1646,8 @@ async def cmd_checkin_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_set(uid,"checkin_hour",hhmm)
     tz_off = int(str(users_get(uid).get("tz_offset") or "0"))
     if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, uid, tz_off, hhmm, lang)
-        schedule_morning_evening(context.application, uid, tz_off, lang)
+        schedule_daily_checkin(context.application, uid, tz_off, hhmm, lang)  # утро
+        schedule_morning_evening(context.application, uid, tz_off, lang)      # вечер
     else:
         logging.warning("JobQueue not available – daily check-in not scheduled.")
     await update.message.reply_text({"ru":f"Ежедневный чек-ин включён ({hhmm}).",
@@ -1642,7 +1658,7 @@ async def cmd_checkin_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_checkin_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if _has_jq_ctx(context):
-        for name in [f"daily_{uid}", f"daily_m_{uid}", f"daily_e_{uid}"]:
+        for name in [f"daily_{uid}", f"daily_e_{uid}"]:
             for j in context.application.job_queue.get_jobs_by_name(name):
                 j.schedule_removal()
     lang = norm_lang(users_get(uid).get("lang") or "en")
@@ -1655,7 +1671,7 @@ def build_app() -> "Application":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     # безопасно подключаем PRO-опросник
     try:
-        register_intake_pro(app, GCLIENT, on_complete_cb=_ipro_save_to_sheets_and_open_menu)
+        register_intake_pro(app, GSPREAD_CLIENT, on_complete_cb=_ipro_save_to_sheets_and_open_menu)
         logging.info("Intake Pro registered.")
     except Exception as e:
         logging.warning(f"Intake Pro registration failed: {e}")
@@ -1679,9 +1695,9 @@ def build_app() -> "Application":
     app.add_handler(CommandHandler("skin",         cmd_skin))
     # Lang toggles
     app.add_handler(CommandHandler("ru", lambda u,c: users_set(u.effective_user.id,"lang","ru") or u.message.reply_text("Ок, дальше отвечаю по-русски.")))
-    app.add_handler(CommandHandler("en", lambda u,c: users_set(u.effective_user.id,"lang","en") or u.message.reply_text("OK, I’ll reply in English.")))
-    app.add_handler(CommandHandler("uk", lambda u,c: users_set(u.effective_user.id,"lang","uk") or u.message.reply_text("Ок, надалі відповідатиму українською.")))
-    app.add_handler(CommandHandler("es", lambda u,c: users_set(u.effective_user.id,"lang","es") or u.message.reply_text("De acuerdo, responderé en español.")))
+    app.add_handler(CommandHandler("en", lambda u,c: users_set(u.effective_user.id,"lang","en")  or u.message.reply_text("OK, I’ll reply in English.")))
+    app.add_handler(CommandHandler("uk", lambda u,c: users_set(u.effective_user.id,"lang","uk")  or u.message.reply_text("Ок, надалі відповідатиму українською.")))
+    app.add_handler(CommandHandler("es", lambda u,c: users_set(u.effective_user.id,"lang","es")  or u.message.reply_text("De acuerdo, responderé en español.")))
     # Gate & callbacks
     app.add_handler(CallbackQueryHandler(gate_cb, pattern=r"^gate:"))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^(?!intake:)"))
