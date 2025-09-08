@@ -42,8 +42,9 @@ except Exception:
 from openai import OpenAI
 
 # ---------- Google Sheets (robust + memory fallback) ----------
+import time
 import gspread
-from gspread.exceptions import SpreadsheetNotFound
+from gspread.exceptions import SpreadsheetNotFound, APIError
 import gspread.utils as gsu
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -365,12 +366,37 @@ DAILY_HEADERS = ["timestamp","user_id","mood","comment"]
 FEEDBACK_HEADERS = ["timestamp","user_id","name","username","rating","comment"]
 RULES_HEADERS = ["rule_id","domain","segment","lang","text","citations"]
 
-def ws_records(ws, expected_headers):
+# ======= ROBUST gspread wrappers with retries for 500/503 =======
+def _is_retryable_apierror(e: Exception) -> bool:
     try:
-        return ws.get_all_records(expected_headers=expected_headers, default_blank="")
+        if isinstance(e, APIError):
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            return code in (500, 503)
+    except Exception:
+        pass
+    return False
+
+def _retry(op, *args, tries=5, base_sleep=0.8, jitter=0.4, **kwargs):
+    for i in range(tries):
+        try:
+            return op(*args, **kwargs)
+        except Exception as e:
+            if _is_retryable_apierror(e) and i < tries - 1:
+                delay = (base_sleep * (2 ** i)) + random.random() * jitter
+                logging.warning(f"Sheets transient error ({i+1}/{tries}) → retry in {delay:.1f}s: {e}")
+                time.sleep(delay)
+                continue
+            raise
+
+def ws_get_all_values_safe(ws):
+    return _retry(ws.get_all_values)
+
+def ws_get_all_records_safe(ws, expected_headers):
+    try:
+        return _retry(ws.get_all_records, expected_headers=expected_headers, default_blank="")
     except Exception as e:
         logging.error(f"ws_records fallback ({getattr(ws,'title','?')}): {e}")
-        vals = ws.get_all_values()
+        vals = ws_get_all_values_safe(ws)
         if not vals: return []
         body = vals[1:]
         out = []
@@ -378,6 +404,25 @@ def ws_records(ws, expected_headers):
             row = (row + [""] * len(expected_headers))[:len(expected_headers)]
             out.append({h: row[i] for i, h in enumerate(expected_headers)})
         return out
+
+def ws_append_row_safe(ws, values):
+    return _retry(ws.append_row, values)
+
+def ws_update_safe(ws, range_name, values):
+    return _retry(ws.update, range_name=range_name, values=values)
+
+def ws_update_cell_safe(ws, row, col, value):
+    return _retry(ws.update_cell, row, col, value)
+
+def ws_cell_safe(ws, row, col):
+    return _retry(ws.cell, row, col)
+
+def ws_row_values_safe(ws, row):
+    return _retry(ws.row_values, row)
+
+# -------- util for records --------
+def ws_records(ws, expected_headers):
+    return ws_get_all_records_safe(ws, expected_headers)
 
 # === Сохраняем gspread client и id таблицы для register_intake_pro ===
 GSPREAD_CLIENT: Optional[gspread.client.Client] = None
@@ -414,16 +459,19 @@ def _sheets_init():
                 ws = ss.worksheet(title)
             except gspread.WorksheetNotFound:
                 ws = ss.add_worksheet(title=title, rows=1000, cols=max(20, len(headers)))
-                ws.append_row(headers)
-            vals = ws.get_all_values()
+                ws_append_row_safe(ws, headers)
+            vals = ws_get_all_values_safe(ws)
             if not vals:
-                ws.append_row(headers)
+                ws_append_row_safe(ws, headers)
             else:
                 head = vals[0]
                 if len(head) < len(headers):
                     pad = headers[len(head):]
-                    ws.update(range_name=f"{gsu.rowcol_to_a1(1,len(head)+1)}:{gsu.rowcol_to_a1(1,len(headers))}",
-                              values=[pad])
+                    ws_update_safe(
+                        ws,
+                        range_name=f"{gsu.rowcol_to_a1(1,len(head)+1)}:{gsu.rowcol_to_a1(1,len(headers))}",
+                        values=[pad]
+                    )
             return ws
 
         ws_feedback = _ensure_ws("Feedback", FEEDBACK_HEADERS)
@@ -454,7 +502,7 @@ sessions: Dict[int, dict] = {}
 
 # -------- Sheets wrappers --------
 def _headers(ws):
-    return ws.row_values(1)
+    return ws_row_values_safe(ws, 1)
 
 def users_get(uid: int) -> dict:
     if SHEETS_ENABLED:
@@ -487,9 +535,10 @@ def users_upsert(uid: int, username: str, lang: str):
         for i, r in enumerate(vals, start=2):
             if str(r.get("user_id")) == str(uid):
                 end_col = gsu.rowcol_to_a1(1, len(USERS_HEADERS)).rstrip("1")
-                ws_users.update(range_name=f"A{i}:{end_col}{i}", values=[[base.get(h,"") for h in USERS_HEADERS]])
+                ws_update_safe(ws_users, range_name=f"A{i}:{end_col}{i}",
+                               values=[[base.get(h,"") for h in USERS_HEADERS]])
                 return
-        ws_users.append_row([base.get(h,"") for h in USERS_HEADERS])
+        ws_append_row_safe(ws_users, [base.get(h,"") for h in USERS_HEADERS])
     else:
         MEM_USERS[uid] = base
 
@@ -500,7 +549,7 @@ def users_set(uid: int, field: str, value: str):
             if str(r.get("user_id")) == str(uid):
                 hdr = USERS_HEADERS
                 if field in hdr:
-                    ws_users.update_cell(i, hdr.index(field)+1, value)
+                    ws_update_cell_safe(ws_users, i, hdr.index(field)+1, value)
                 return
     else:
         u = MEM_USERS.setdefault(uid, {})
@@ -530,9 +579,9 @@ def profiles_upsert(uid: int, data: dict):
         values = [current.get(h,"") for h in hdr]
         end_col = gsu.rowcol_to_a1(1, len(hdr)).rstrip("1")
         if idx:
-            ws_profiles.update(range_name=f"A{idx}:{end_col}{idx}", values=[values])
+            ws_update_safe(ws_profiles, range_name=f"A{idx}:{end_col}{idx}", values=[values])
         else:
-            ws_profiles.append_row(values)
+            ws_append_row_safe(ws_profiles, values)
     else:
         row = MEM_PROFILES.setdefault(uid, {"user_id": str(uid)})
         for k,v in data.items():
@@ -547,7 +596,7 @@ def episode_create(uid: int, topic: str, severity: int, red: str) -> str:
            "target":"<=3/10","reminder_at":"","next_checkin_at":"","status":"open",
            "last_update":now,"notes":""}
     if SHEETS_ENABLED:
-        ws_episodes.append_row([rec.get(h,"") for h in EPISODES_HEADERS])
+        ws_append_row_safe(ws_episodes, [rec.get(h,"") for h in EPISODES_HEADERS])
     else:
         MEM_EPISODES.append(rec)
     return eid
@@ -565,14 +614,14 @@ def episode_find_open(uid: int) -> Optional[dict]:
 
 def episode_set(eid: str, field: str, value: str):
     if SHEETS_ENABLED:
-        vals = ws_episodes.get_all_values(); hdr = vals[0]
+        vals = ws_get_all_values_safe(ws_episodes); hdr = vals[0] if vals else EPISODES_HEADERS
         if field not in hdr:
             return
         col = hdr.index(field)+1
         for i in range(2, len(vals)+1):
-            if ws_episodes.cell(i,1).value == eid:
-                ws_episodes.update_cell(i,col,value)
-                ws_episodes.update_cell(i,hdr.index("last_update")+1, iso(utcnow()))
+            if ws_cell_safe(ws_episodes, i, 1).value == eid:
+                ws_update_cell_safe(ws_episodes, i, col, value)
+                ws_update_cell_safe(ws_episodes, i, hdr.index("last_update")+1, iso(utcnow()))
                 return
     else:
         for r in MEM_EPISODES:
@@ -581,7 +630,7 @@ def episode_set(eid: str, field: str, value: str):
 
 def feedback_add(ts, uid, name, username, rating, comment):
     if SHEETS_ENABLED:
-        ws_feedback.append_row([ts,str(uid),name,username or "",rating,comment])
+        ws_append_row_safe(ws_feedback, [ts,str(uid),name,username or "",rating,comment])
     else:
         MEM_FEEDBACK.append({"timestamp":ts,"user_id":str(uid),"name":name,"username":username or "","rating":rating,"comment":comment})
 
@@ -589,7 +638,7 @@ def reminder_add(uid: int, text: str, when_utc: datetime):
     rid = f"{uid}-{uuid.uuid4().hex[:6]}"
     rec = {"id":rid,"user_id":str(uid),"text":text,"when_utc":iso(when_utc),"created_at":iso(utcnow()),"status":"scheduled"}
     if SHEETS_ENABLED:
-        ws_reminders.append_row([rec.get(h,"") for h in REMINDERS_HEADERS])
+        ws_append_row_safe(ws_reminders, [rec.get(h,"") for h in REMINDERS_HEADERS])
     else:
         MEM_REMINDERS.append(rec)
     return rid
@@ -601,10 +650,10 @@ def reminders_all_records():
 
 def reminders_mark_sent(rid: str):
     if SHEETS_ENABLED:
-        vals = ws_reminders.get_all_values()
+        vals = ws_get_all_values_safe(ws_reminders)
         for i in range(2, len(vals)+1):
-            if ws_reminders.cell(i,1).value == rid:
-                ws_reminders.update_cell(i,6,"sent"); return
+            if ws_cell_safe(ws_reminders, i, 1).value == rid:
+                ws_update_cell_safe(ws_reminders, i, 6, "sent"); return
     else:
         for r in MEM_REMINDERS:
             if r["id"]==rid:
@@ -612,7 +661,7 @@ def reminders_mark_sent(rid: str):
 
 def daily_add(ts, uid, mood, comment):
     if SHEETS_ENABLED:
-        ws_daily.append_row([ts,str(uid),mood,comment or ""])
+        ws_append_row_safe(ws_daily, [ts,str(uid),mood,comment or ""])
     else:
         MEM_DAILY.append({"timestamp":ts,"user_id":str(uid),"mood":mood,"comment":comment or ""})
 
@@ -871,7 +920,6 @@ def dlg_get(uid:int) -> DialogState:
 
 def dlg_save(uid:int, st:DialogState):
     sessions.setdefault(uid,{})["dlg"] = st
-
 # ===================== /СЛОТ-ДВИЖОК =====================
 
 # ------------- Jobs -------------
@@ -1284,35 +1332,43 @@ PROFILE_STEPS = [
     {"key":"age","opts":{"ru":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
                          "en":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
                          "uk":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
-                         "es":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")]}},
+                         "es":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")]}}
+    ,
     {"key":"height_cm","opts":{"ru":[("160","160"),("170","170"),("180","180"),("190","190"),("Другое","")],
                                "en":[("160","160"),("170","170"),("180","180"),("190","190"),("Other","")],
                                "uk":[("160","160"),("170","170"),("180","180"),("190","190"),("Інше","")],
-                               "es":[("160","160"),("170","170"),("180","180"),("190","190"),("Otra","")]}},
+                               "es":[("160","160"),("170","170"),("180","180"),("190","190"),("Otra","")]}}
+    ,
     {"key":"weight_kg","opts":{"ru":[("50","50"),("60","60"),("70","70"),("80","80"),("Другое","")],
                                "en":[("50","50"),("60","60"),("70","70"),("80","80"),("Other","")],
                                "uk":[("50","50"),("60","60"),("70","70"),("80","80"),("Інше","")],
-                               "es":[("50","50"),("60","60"),("70","70"),("80","80"),("Otra","")]}},
+                               "es":[("50","50"),("60","60"),("70","70"),("80","80"),("Otra","")]}}
+    ,
     {"key":"goal","opts":{"ru":[("Похудение","weight"),("Энергия","energy"),("Сон","sleep"),("Долголетие","longevity"),("Сила","strength")],
                           "en":[("Weight","weight"),("Energy","energy"),("Sleep","sleep"),("Longevity","longevity"),("Strength","strength")],
                           "uk":[("Вага","weight"),("Енергія","energy"),("Сон","sleep"),("Довголіття","longevity"),("Сила","strength")],
-                          "es":[("Peso","weight"),("Energía","energy"),("Sueño","sleep"),("Longevidad","longevity"),("Fuerza","strength")]}},
+                          "es":[("Peso","weight"),("Energía","energy"),("Sueño","sleep"),("Longevidad","longevity"),("Fuerza","strength")]}}
+    ,
     {"key":"conditions","opts":{"ru":[("Нет","none"),("Гипертония","hypertension"),("Диабет","diabetes"),("Щитовидка","thyroid"),("Другое","other")],
                                "en":[("None","none"),("Hypertension","hypertension"),("Diabetes","diabetes"),("Thyroid","thyroid"),("Other","other")],
                                "uk":[("Немає","none"),("Гіпертонія","hypertension"),("Діабет","diabetes"),("Щитоподібна","thyroid"),("Інше","other")],
-                               "es":[("Ninguna","none"),("Hipertensión","hypertension"),("Diabetes","diabetes"),("Tiroides","thyroid"),("Otra","other")]}},
+                               "es":[("Ninguna","none"),("Hipertensión","hypertension"),("Diabetes","diabetes"),("Tiroides","thyroid"),("Otra","other")]}}
+    ,
     {"key":"meds","opts":{"ru":[("Нет","none"),("Магний","magnesium"),("Витамин D","vitd"),("Аллергии есть","allergies"),("Другое","other")],
                           "en":[("None","none"),("Magnesium","magnesium"),("Vitamin D","vitd"),("Allergies","allergies"),("Other","other")],
                           "uk":[("Немає","none"),("Магній","magnesium"),("Вітамін D","vitd"),("Алергії","allergies"),("Інше","other")],
-                          "es":[("Ninguno","none"),("Magnesio","magnesium"),("Vitamina D","vitd"),("Alergias","allergies"),("Otro","other")]}},
+                          "es":[("Ninguno","none"),("Magnesio","magnesium"),("Vitamina D","vitd"),("Alergias","allergies"),("Otro","other")]}}
+    ,
     {"key":"supplements","opts":{"ru":[("Нет","none"),("Омега-3","omega3"),("Магний","magnesium"),("Витамин D","vitd"),("Другое","other")],
                                  "en":[("None","none"),("Omega-3","omega3"),("Magnesium","magnesium"),("Vitamin D","vitd"),("Other","other")],
                                  "uk":[("Немає","none"),("Омега-3","omega3"),("Магній","magnesium"),("Вітамін D","vitd"),("Інше","other")],
-                                 "es":[("Ninguno","none"),("Omega-3","omega3"),("Magnesio","magnesium"),("Vitamina D","vitd"),("Otro","other")]}},
+                                 "es":[("Ninguno","none"),("Omega-3","omega3"),("Magnesio","magnesium"),("Vitamina D","vitd"),("Otro","other")]}}
+    ,
     {"key":"sleep","opts":{"ru":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
                            "en":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")],
                            "uk":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
-                           "es":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")]}},
+                           "es":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")]}}
+    ,
     {"key":"activity","opts":{"ru":[("<5к шагов","<5k"),("5–8к","5-8k"),("8–12к","8-12k"),("Спорт регулярно","sport")],
                              "en":[("<5k steps","<5k"),("5–8k","5-8k"),("8–12k","8-12k"),("Regular sport","sport")],
                              "uk":[("<5к кроків","<5k"),("5–8к","5-8k"),("8–12к","8-12k"),("Спорт регулярно","sport")],
@@ -1734,10 +1790,11 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if SHEETS_ENABLED:
-        vals = ws_users.get_all_values()
+        vals = ws_get_all_values_safe(ws_users)
         for i in range(2, len(vals)+1):
-            if ws_users.cell(i,1).value == str(uid):
-                ws_users.delete_rows(i); break
+            if ws_cell_safe(ws_users, i, 1).value == str(uid):
+                _retry(ws_users.delete_rows, i)
+                break
     else:
         MEM_USERS.pop(uid, None); MEM_PROFILES.pop(uid, None)
         global MEM_EPISODES, MEM_REMINDERS, MEM_DAILY
