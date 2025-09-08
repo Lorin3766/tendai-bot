@@ -2,11 +2,13 @@
 # TendAI main.py — обновлено: лимитер/тихие часы, утро+вечер, Youth-команды,
 # безопасные headers для Sheets, Rules (evidence), мягкий фидбек, баннер профиля (1 раз),
 # тёплый тон (мысль→вопрос), 3 пресета напоминаний, конкретные варианты,
-# АВТО-ПРЕДЛОЖЕНИЕ ОПРОСНИКА С ПЕРВОГО СООБЩЕНИЯ + шаги height_cm/weight_kg/supplements
+# АВТО-ОПРОС при первом сообщении, расширенный профиль (рост/вес/добавки),
+# слот-движок NLU (короткая память диалога) без лома структуры.
 
 import os, re, json, uuid, logging, random
 from datetime import datetime, timedelta, timezone, time as dtime, date
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Any
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from dotenv import load_dotenv
@@ -183,7 +185,8 @@ T = {
         "start_where":"С чего начнём? (симптом/сон/питание/анализы/привычки/долголетие)",
         "daily_gm":"Доброе утро! Быстрый чек-ин:",
         "daily_pm":"Вечерний чек-ин: как прошёл день?",
-        "mood_good":"😃 Хорошо","mood_ok":"😐 Нормально","mood_bad":"😣 Плохо","mood_note":"✍️ Комментарий",
+        "mood_good":"😃 Хорошо","mood_ok":"😐 Нормально","mood_bad":"😣 Плохо","мood_note":"✍️ Комментарий",
+        "mood_note":"✍️ Комментарий",
         "mood_thanks":"Спасибо! Хорошего дня 👋",
         "triage_pain_q1":"Где болит?",
         "triage_pain_q1_opts":["Голова","Горло","Спина","Живот","Другое"],
@@ -265,8 +268,8 @@ def detect_lang_from_text(text: str, fallback: str) -> str:
         return fallback
 
 def profile_is_incomplete(profile_row: dict) -> bool:
-    keys = ["sex","age","goal"]
-    return sum(1 for k in keys if str(profile_row.get(k) or "").strip()) < 2
+    keys = ["sex","age","goal","height_cm","weight_kg"]
+    return sum(1 for k in keys if str(profile_row.get(k) or "").strip()) < 3
 
 # ===== ONBOARDING GATE =====
 GATE_FLAG_KEY = "menu_unlocked"
@@ -310,9 +313,11 @@ async def _ipro_save_to_sheets_and_open_menu(update: Update, context: ContextTyp
         "meds": profile.get("meds") or "",
         "activity": profile.get("hab_activity") or "",
         "sleep": profile.get("hab_sleep") or "",
+        "height_cm": str(profile.get("height_cm") or ""),
+        "weight_kg": str(profile.get("weight_kg") or ""),
+        "supplements": profile.get("supplements") or "",
         "notes": ", ".join(sorted(profile.get("complaints", []))) if isinstance(profile.get("complaints"), set) else (profile.get("complaints") or ""),
     })
-    # показать баннер в следующий ответ
     users_set(uid, "profile_banner_shown", "no")
     context.user_data[GATE_FLAG_KEY] = True
     render_cb = context.application.bot_data.get("render_menu_cb")
@@ -349,12 +354,11 @@ ws_feedback = ws_users = ws_profiles = ws_episodes = ws_reminders = ws_daily = w
 USERS_HEADERS = [
     "user_id","username","lang","consent","tz_offset","checkin_hour","paused",
     "quiet_hours","last_sent_utc","sent_today","streak","challenge_id","challenge_day",
-    # мягкий фидбек и баннер профиля
     "last_fb_asked","profile_banner_shown"
 ]
-PROFILES_HEADERS = ["user_id","sex","age","goal","conditions","meds","allergies","sleep","activity","diet","notes","updated_at","goals","diet_focus","steps_target","cycle_enabled","cycle_last_date","cycle_avg_len",
-                    # новые поля
-                    "height_cm","weight_kg","supplements"]
+PROFILES_HEADERS = ["user_id","sex","age","goal","conditions","meds","allergies","sleep","activity","diet",
+                    "height_cm","weight_kg","supplements",
+                    "updated_at","goals","diet_focus","steps_target","cycle_enabled","cycle_last_date","cycle_avg_len"]
 EPISODES_HEADERS = ["episode_id","user_id","topic","started_at","baseline_severity","red_flags","plan_accepted","target","reminder_at","next_checkin_at","status","last_update","notes"]
 REMINDERS_HEADERS = ["id","user_id","text","when_utc","created_at","status"]
 DAILY_HEADERS = ["timestamp","user_id","mood","comment"]
@@ -411,7 +415,6 @@ def _sheets_init():
             except gspread.WorksheetNotFound:
                 ws = ss.add_worksheet(title=title, rows=1000, cols=max(20, len(headers)))
                 ws.append_row(headers)
-            # выравниваем заголовки при расхождении
             vals = ws.get_all_values()
             if not vals:
                 ws.append_row(headers)
@@ -657,7 +660,6 @@ def schedule_from_sheet_on_start(app):
         tz_off = int(str(u.get("tz_offset") or "0"))
         hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
         schedule_daily_checkin(app, uid, tz_off, hhmm, norm_lang(u.get("lang") or "en"))
-        # вечерний (отдельный текст)
         schedule_morning_evening(app, uid, tz_off, norm_lang(u.get("lang") or "en"))
 
 def hhmm_tuple(hhmm:str)->Tuple[int,int]:
@@ -734,6 +736,144 @@ async def maybe_send(context: ContextTypes.DEFAULT_TYPE, uid: int, text: str, kb
             mark_sent(uid)
         except Exception as e:
             logging.error(f"send fail: {e}")
+
+# ===================== СЛОТ-ДВИЖОК NLU (короткая память) =====================
+@dataclass
+class DialogState:
+    issue: Optional[str] = None
+    slots: Dict[str, Any] = field(default_factory=dict)
+    last_slot: Optional[str] = None
+    lang: str = "ru"
+
+QUESTION_FLOWS = {
+    "zaeda": {
+        "order": ["duration_days", "pain", "redness", "triggers", "home_care"],
+        "slots": {
+            "duration_days": {"q": "Сколько дней это уже продолжается?", "parse": "int_days", "hint":"Например: 2 дня."},
+            "pain":         {"q": "Есть ли боль или жжение в уголке губ?", "parse": "yesno"},
+            "redness":      {"q": "Есть ли покраснение или трещины?", "parse": "yesno"},
+            "triggers":     {"q": "Замечали триггеры: сухость губ, облизывание, протезы/брекеты, простуда?", "parse": "free"},
+            "home_care":    {"q": "Пробовали что-то наносить (бальзам, цинковая мазь)?", "parse": "free"},
+        },
+        "done_rule": "duration_days is not None and pain is not None and redness is not None"
+    },
+    "headache": {
+        "order": ["duration_hours", "location", "severity", "redflags"],
+        "slots": {
+            "duration_hours":{"q":"Сколько часов длится головная боль сейчас?","parse":"int_hours"},
+            "location":{"q":"Где болит сильнее: лоб, висок, затылок, половина головы?","parse":"choice","choices":["лоб","висок","затылок","половина головы","другое"]},
+            "severity":{"q":"Насколько сильно по шкале 0–10?","parse":"int"},
+            "redflags":{"q":"Есть ли тревожные симптомы: внезапная «самая сильная», высокая температура, слабость в руке/ноге, нарушение речи/зрения?","parse":"yesno"}
+        },
+        "done_rule":"duration_hours is not None and location is not None and severity is not None and redflags is not None"
+    }
+}
+
+def _parse_yesno(text: str) -> Optional[bool]:
+    t = text.lower()
+    y = ["да","есть","ага","yes","y","true"]
+    n = ["нет","не","no","n","false"]
+    if any(w in t for w in y): return True
+    if any(w in t for w in n): return False
+    return None
+
+def _parse_int(text: str) -> Optional[int]:
+    m = re.search(r"(-?\d+)", text)
+    return int(m.group(1)) if m else None
+
+def _run_parser(parser: str, text: str, cfg: dict):
+    if parser == "yesno": return _parse_yesno(text)
+    if parser == "int":   return _parse_int(text)
+    if parser == "int_days":  return _parse_int(text)
+    if parser == "int_hours": return _parse_int(text)
+    if parser == "choice":
+        t = text.lower()
+        for c in cfg.get("choices",[]):
+            if c in t: return c
+        return None
+    if parser == "free":  return text.strip()
+    return None
+
+def _next_missing(state: DialogState) -> Optional[str]:
+    flow = QUESTION_FLOWS.get(state.issue)
+    if not flow: return None
+    for s in flow["order"]:
+        if s not in state.slots:
+            return s
+    return None
+
+def _is_done(state: DialogState) -> bool:
+    flow = QUESTION_FLOWS.get(state.issue)
+    if not flow: return True
+    expr = flow["done_rule"]
+    loc = {k: state.slots.get(k) for k in flow["slots"].keys()}
+    try:
+        return bool(eval(expr, {}, loc))
+    except Exception:
+        return False
+
+def _final_advice(state: DialogState) -> str:
+    if state.issue == "zaeda":
+        d = state.slots.get("duration_days")
+        pain = state.slots.get("pain")
+        red = state.slots.get("redness")
+        lines = [
+            "Похоже на заеду (ангулит). Держите уголки губ сухими, используйте защитный бальзам.",
+            "Цинковая мазь/крем или бальзам с пантенолом 1–2 раза в день."
+        ]
+        if d is not None and d < 7 and not (pain or red):
+            lines.append("Лёгкие случаи проходят за 5–7 дней.")
+        else:
+            lines.append("Если нарастает боль/трещины или не пройдёт за 7 дней — обратитесь к врачу/стоматологу.")
+        lines.append("Ниже — напоминание и «когда срочно».")
+        return " ".join(lines)
+    if state.issue == "headache":
+        sev = state.slots.get("severity")
+        rf  = state.slots.get("redflags")
+        lines = []
+        if rf:
+            lines.append("Есть тревожные признаки — лучше срочно оцениться у врача/ER.")
+        elif sev is not None and sev >= 7:
+            lines.append("Боль сильная — если не снижается на фоне НПВП и отдыха, обратитесь очно.")
+        lines.append("Базово: вода, 15–20 мин отдыха, НПВП по инструкции при отсутствии противопоказаний, меньше экранов.")
+        return " ".join(lines)
+    return "Собрал данные — готов дать совет. Уточните тему одним предложением."
+
+def dialog_step(state: DialogState, user_text: str) -> Dict[str, Any]:
+    if not state.issue:
+        t = user_text.lower()
+        if "заеда" in t or "трещина в уголке" in t: state.issue = "zaeda"
+        elif "головн" in t or "headache" in t:      state.issue = "headache"
+    if state.last_slot:
+        slot = state.last_slot
+        flow = QUESTION_FLOWS.get(state.issue, {})
+        cfg = flow.get("slots", {}).get(slot, {})
+        val = _run_parser(cfg.get("parse","free"), user_text, cfg)
+        if val is not None:
+            state.slots[slot] = val
+            state.last_slot = None
+        else:
+            return {"type":"reprompt","text": (cfg.get("hint") or "Не совсем понял. Одним числом/словом, пожалуйста."), "buttons":[]}
+    ns = _next_missing(state)
+    if ns:
+        state.last_slot = ns
+        q = QUESTION_FLOWS[state.issue]["slots"][ns]["q"]
+        return {"type":"ask","text": q, "buttons":[]}
+    if state.issue and _is_done(state):
+        return {"type":"advice","text": _final_advice(state), "buttons":["🔔 Напомни","🚑 Когда срочно в скорую"]}
+    return {"type":"ask","text":"Коротко: что беспокоит сейчас?", "buttons":[]}
+
+def dlg_get(uid:int) -> DialogState:
+    s = sessions.setdefault(uid, {})
+    if "dlg" not in s:
+        s["dlg"] = DialogState()
+    return s["dlg"]
+
+def dlg_save(uid:int, st:DialogState):
+    sessions.setdefault(uid,{})["dlg"] = st
+
+# ===================== /СЛОТ-ДВИЖОК =====================
+
 # ------------- Jobs -------------
 async def job_checkin_episode(context: ContextTypes.DEFAULT_TYPE):
     d = context.job.data or {}
@@ -794,7 +934,6 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
     except Exception as e:
         logging.error(f"router LLM error: {e}")
         return {"intent":"other","assistant_reply":T[lang]["unknown"],"followups":[],"needs_more":True,"red_flags":False,"confidence":0.3}
-
 # ===== Rules-based подсказки =====
 def rules_match(seg: str, prof: dict) -> bool:
     if not seg:
@@ -878,13 +1017,13 @@ def cycle_tip(lang: str, phase: str) -> str:
     }
     return base.get(phase, {}).get(lang, "")
 
+# ===== Утро/Вечер чек-ины =====
 async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
     d = context.job.data or {}
     uid, lang = d.get("user_id"), d.get("lang","en")
     u = users_get(uid)
     if (u.get("paused") or "").lower()=="yes":
         return
-    # приветствие + настроение (утро)
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(T[lang]["mood_good"], callback_data="mood|good"),
          InlineKeyboardButton(T[lang]["mood_ok"], callback_data="mood|ok"),
@@ -893,20 +1032,17 @@ async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
     ])
     await maybe_send(context, uid, T[lang]["daily_gm"], kb)
 
-    # 1–2 совета по питанию из Rules
     prof = profiles_get(uid)
     tips = pick_nutrition_tips(lang, prof, limit=2)
     if tips:
         await maybe_send(context, uid, "• " + "\n• ".join(tips))
 
-    # деликатный совет по фазе цикла (если включено)
     phase = cycle_phase_for(uid)
     if phase:
         tip = cycle_tip(lang, phase)
         if tip:
             await maybe_send(context, uid, tip)
 
-# Новый вечерний джоб — другой текст
 async def job_evening_checkin(context: ContextTypes.DEFAULT_TYPE):
     d = context.job.data or {}
     uid, lang = d.get("user_id"), d.get("lang","en")
@@ -928,7 +1064,6 @@ SERIOUS_KWS = {
     "cancer":["cancer","рак","онко","онколог","опухол","пухлина","tumor"],
     "tb":["tuberculosis","tb","туберкул","туберкульоз"],
 }
-
 def detect_serious(text: str) -> Optional[str]:
     low = (text or "").lower()
     for cond, kws in SERIOUS_KWS.items():
@@ -936,7 +1071,7 @@ def detect_serious(text: str) -> Optional[str]:
             return cond
     return None
 
-# ===== Персонализированный префикс/баннер (показывать 1 раз) =====
+# ===== Персонализированный баннер и тон =====
 def _ru_age_phrase(age_str: str) -> str:
     try:
         n = int(re.search(r"\d+", age_str).group())
@@ -958,22 +1093,16 @@ def profile_banner(lang: str, profile: dict) -> str:
     sex = str(profile.get("sex") or "").strip().lower()
     age_raw = str(profile.get("age") or "").strip()
     goal = (profile.get("goal") or profile.get("goals") or "").strip()
-    ht = (profile.get("height_cm") or "").strip()
-    wt = (profile.get("weight_kg") or "").strip()
     if lang == "ru":
         sex_ru = {"male":"мужчина","female":"женщина","other":"человек"}.get(sex, "человек")
         age_ru = _ru_age_phrase(age_raw or "—")
         goal_ru = {"longevity":"долголетие","energy":"энергия","sleep":"сон","weight":"похудение","strength":"сила"}.get(goal, goal or "—")
-        hw = f", {ht}см/{wt}кг" if (ht or wt) else ""
-        return f"{sex_ru}, {age_ru}{hw}; цель — {goal_ru}"
+        return f"{sex_ru}, {age_ru}; цель — {goal_ru}"
     if lang == "uk":
-        hw = f", {ht}см/{wt}кг" if (ht or wt) else ""
-        return f"{sex or '—'}, {age_raw or '—'}{hw}; ціль — {goal or '—'}"
+        return f"{sex or '—'}, {age_raw or '—'}; ціль — {goal or '—'}"
     if lang == "es":
-        hw = f", {ht}cm/{wt}kg" if (ht or wt) else ""
-        return f"{sex or '—'}, {age_raw or '—'}{hw}; objetivo — {goal or '—'}"
-    hw = f", {ht}cm/{wt}kg" if (ht or wt) else ""
-    return f"{sex or '—'}, {age_raw or '—'}y{hw}; goal — {goal or '—'}"
+        return f"{sex or '—'}, {age_raw or '—'}; objetivo — {goal or '—'}"
+    return f"{sex or '—'}, {age_raw or '—'}y; goal — {goal or '—'}"
 
 def should_show_profile_banner(uid: int) -> bool:
     u = users_get(uid)
@@ -1028,7 +1157,7 @@ def pain_plan(lang: str, red_flags_selected: List[str], profile: dict) -> List[s
                   "3) Ventila la habitación; reduce pantallas 30–60 min.","Meta: por la tarde dolor ≤3/10."]}[lang]
     return core + extra + [T[lang]["er_text"]]
 
-# ===== Клавиатуры (6–7 кнопок/экран, 3 пресета напоминаний) =====
+# ===== Клавиатуры =====
 def inline_numbers_0_10() -> InlineKeyboardMarkup:
     rows = []
     row1 = [InlineKeyboardButton(str(n), callback_data=f"num|{n}") for n in range(0, 6)]
@@ -1088,31 +1217,15 @@ def inline_actions(lang: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(T[lang]["act_er"], callback_data="act|er")]
     ])
 
-# ===== Youth-пакет: команды =====
+# ===== Youth-команды =====
 async def cmd_energy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     lang = norm_lang(users_get(uid).get("lang") or "en")
     tips = {
-      "en": [
-        "1) 10-min brisk walk now (raise pulse).",
-        "2) 300–500 ml water + light protein.",
-        "3) 20-min screen detox to refresh focus."
-      ],
-      "ru": [
-        "1) Быстрая ходьба 10 мин (пульс чуть выше обычного).",
-        "2) 300–500 мл воды + лёгкий белок.",
-        "3) 20 мин без экрана — разгрузка внимания."
-      ],
-      "uk": [
-        "1) Швидка ходьба 10 хв (пульс трохи вище).",
-        "2) 300–500 мл води + легкий білок.",
-        "3) 20 хв без екрана — перезавантаження уваги."
-      ],
-      "es": [
-        "1) Camina rápido 10 min.",
-        "2) 300–500 ml de agua + proteína ligera.",
-        "3) 20 min sin pantallas."
-      ]
+      "en": ["1) 10-min brisk walk now (raise pulse).","2) 300–500 ml water + light protein.","3) 20-min screen detox to refresh focus."],
+      "ru": ["1) Быстрая ходьба 10 мин (пульс чуть выше обычного).","2) 300–500 мл воды + лёгкий белок.","3) 20 мин без экрана — разгрузка внимания."],
+      "uk": ["1) Швидка ходьба 10 хв (пульс трохи вище).","2) 300–500 мл води + легкий білок.","3) 20 хв без екрана — перезавантаження уваги."],
+      "es": ["1) Camina rápido 10 min.","2) 300–500 ml de agua + proteína ligera.","3) 20 min sin pantallas."]
     }[lang]
     await update.message.reply_text(T[lang]["energy_title"] + "\n" + "\n".join(tips), reply_markup=inline_actions(lang))
 
@@ -1144,33 +1257,13 @@ async def cmd_skin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }[lang]
     await update.message.reply_text(T[lang]["skin_title"] + "\n" + tip, reply_markup=inline_actions(lang))
 
-# ===== Pain triage вспомогательные =====
-def _kb_for_code(lang: str, code: str):
-    if code == "painloc":
-        kb = inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
-    elif code == "painkind":
-        kb = inline_list(T[lang]["triage_pain_q2_opts"], "painkind")
-    elif code == "paindur":
-        kb = inline_list(T[lang]["triage_pain_q3_opts"], "paindur")
-    elif code == "num":
-        kb = inline_numbers_0_10()
-    elif code == "painrf":
-        kb = inline_list(T[lang]["triage_pain_q5_opts"], "painrf")
-    else:
-        kb = None
-    if kb:
-        rows = kb.inline_keyboard + [[InlineKeyboardButton(T[lang]["back"], callback_data="pain|exit")]]
-        return InlineKeyboardMarkup(rows)
-    return None
-
-# ====== Health60 =====
+# ===== Health60 / Intake =====
 async def cmd_health60(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None))
     sessions.setdefault(uid, {})["awaiting_h60"] = True
     await update.message.reply_text(T[lang]["h60_intro"])
 
-# ===== /intake кнопка =====
 async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None) or "en")
@@ -1182,7 +1275,7 @@ async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(start_label, callback_data="intake:start")]])
     await update.message.reply_text(txt, reply_markup=kb)
 
-# ===== Profile (расширено до 10 шагов) =====
+# ===== Расширенный профиль (10 шагов) =====
 PROFILE_STEPS = [
     {"key":"sex","opts":{"ru":[("Мужчина","male"),("Женщина","female"),("Другое","other")],
                          "en":[("Male","male"),("Female","female"),("Other","other")],
@@ -1192,14 +1285,14 @@ PROFILE_STEPS = [
                          "en":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
                          "uk":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
                          "es":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")]}},
-    {"key":"height_cm","opts":{"ru":[("160","160"),("170","170"),("180","180")],
-                               "en":[("160","160"),("170","170"),("180","180")],
-                               "uk":[("160","160"),("170","170"),("180","180")],
-                               "es":[("160","160"),("170","170"),("180","180")]}},
-    {"key":"weight_kg","opts":{"ru":[("60","60"),("75","75"),("90","90")],
-                               "en":[("60","60"),("75","75"),("90","90")],
-                               "uk":[("60","60"),("75","75"),("90","90")],
-                               "es":[("60","60"),("75","75"),("90","90")]}},
+    {"key":"height_cm","opts":{"ru":[("160","160"),("170","170"),("180","180"),("190","190"),("Другое","")],
+                               "en":[("160","160"),("170","170"),("180","180"),("190","190"),("Other","")],
+                               "uk":[("160","160"),("170","170"),("180","180"),("190","190"),("Інше","")],
+                               "es":[("160","160"),("170","170"),("180","180"),("190","190"),("Otra","")]}},
+    {"key":"weight_kg","opts":{"ru":[("50","50"),("60","60"),("70","70"),("80","80"),("Другое","")],
+                               "en":[("50","50"),("60","60"),("70","70"),("80","80"),("Other","")],
+                               "uk":[("50","50"),("60","60"),("70","70"),("80","80"),("Інше","")],
+                               "es":[("50","50"),("60","60"),("70","70"),("80","80"),("Otra","")]}},
     {"key":"goal","opts":{"ru":[("Похудение","weight"),("Энергия","energy"),("Сон","sleep"),("Долголетие","longevity"),("Сила","strength")],
                           "en":[("Weight","weight"),("Energy","energy"),("Sleep","sleep"),("Longevity","longevity"),("Strength","strength")],
                           "uk":[("Вага","weight"),("Енергія","energy"),("Сон","sleep"),("Довголіття","longevity"),("Сила","strength")],
@@ -1212,10 +1305,10 @@ PROFILE_STEPS = [
                           "en":[("None","none"),("Magnesium","magnesium"),("Vitamin D","vitd"),("Allergies","allergies"),("Other","other")],
                           "uk":[("Немає","none"),("Магній","magnesium"),("Вітамін D","vitd"),("Алергії","allergies"),("Інше","other")],
                           "es":[("Ninguno","none"),("Magnesio","magnesium"),("Vitamina D","vitd"),("Alergias","allergies"),("Otro","other")]}},
-    {"key":"supplements","opts":{"ru":[("Нет","none"),("Омега-3","omega3"),("Креатин","creatine"),("Протеин","protein"),("Другое","other")],
-                                "en":[("None","none"),("Omega-3","omega3"),("Creatine","creatine"),("Protein","protein"),("Other","other")],
-                                "uk":[("Немає","none"),("Омега-3","omega3"),("Креатин","creatine"),("Протеїн","protein"),("Інше","other")],
-                                "es":[("Ninguno","none"),("Omega-3","omega3"),("Creatina","creatine"),("Proteína","protein"),("Otro","other")]}},
+    {"key":"supplements","opts":{"ru":[("Нет","none"),("Омега-3","omega3"),("Магний","magnesium"),("Витамин D","vitd"),("Другое","other")],
+                                 "en":[("None","none"),("Omega-3","omega3"),("Magnesium","magnesium"),("Vitamin D","vitd"),("Other","other")],
+                                 "uk":[("Немає","none"),("Омега-3","omega3"),("Магній","magnesium"),("Вітамін D","vitd"),("Інше","other")],
+                                 "es":[("Ninguno","none"),("Omega-3","omega3"),("Magnesio","magnesium"),("Vitamina D","vitd"),("Otro","other")]}},
     {"key":"sleep","opts":{"ru":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
                            "en":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")],
                            "uk":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
@@ -1237,7 +1330,7 @@ def build_profile_kb(lang:str, key:str, opts:List[Tuple[str,str]])->InlineKeyboa
     return InlineKeyboardMarkup(rows)
 
 async def start_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
-    sessions[uid] = {"profile_active": True, "p_step": 0, "p_wait_key": None}
+    sessions[uid] = {**sessions.get(uid, {}), "profile_active": True, "p_step": 0, "p_wait_key": None}
     await context.bot.send_message(chat_id, T[lang]["profile_intro"], reply_markup=ReplyKeyboardRemove())
     step = PROFILE_STEPS[0]
     kb = build_profile_kb(lang, step["key"], step["opts"][lang])
@@ -1249,17 +1342,14 @@ async def advance_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
     if s["p_step"] < len(PROFILE_STEPS):
         idx = s["p_step"]; step = PROFILE_STEPS[idx]
         kb = build_profile_kb(lang, step["key"], step["opts"][lang])
-        # текст шага соответствует локализации (1..10)
-        key_to_idx = {
-            "sex":1,"age":2,"height_cm":3,"weight_kg":4,"goal":5,"conditions":6,"meds":7,
-            "supplements":8,"sleep":9,"activity":10
+        key_to_text = {
+            0:"p_step_1",1:"p_step_2",2:"p_step_3",3:"p_step_4",4:"p_step_5",
+            5:"p_step_6",6:"p_step_7",7:"p_step_8",8:"p_step_9",9:"p_step_10"
         }
-        num = key_to_idx.get(step["key"], idx+1)
-        await context.bot.send_message(chat_id, T[lang][f"p_step_{num}"], reply_markup=kb)
+        await context.bot.send_message(chat_id, T[lang][key_to_text[idx]], reply_markup=kb)
         return
-    # финал
     prof = profiles_get(uid); summary=[]
-    for k in ["sex","age","height_cm","weight_kg","goal","conditions","meds","supplements","sleep","activity","diet"]:
+    for k in ["sex","age","height_cm","weight_kg","goal","conditions","meds","supplements","sleep","activity"]:
         v = prof.get(k) or sessions.get(uid,{}).get(k,"")
         if v: summary.append(f"{k}: {v}")
     profiles_upsert(uid, {})
@@ -1275,7 +1365,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"INCOMING uid={uid} text={text[:200]}")
     urec = users_get(uid)
 
-    # новый пользователь: сохраняем, показываем приветствие, меню, согласие и GATE (опрос)
+    # Новый пользователь → авто-гейт с первого сообщения
     if not urec:
         lang_guess = detect_lang_from_text(text, norm_lang(getattr(user, "language_code", None)))
         users_upsert(uid, user.username or "", lang_guess)
@@ -1288,8 +1378,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if _has_jq_ctx(context):
             schedule_daily_checkin(context.application, uid, 0, DEFAULT_CHECKIN_LOCAL, lang_guess)
             schedule_morning_evening(context.application, uid, 0, lang_guess)
-        # сразу предлагаем пройти intake (gate)
-        context.user_data["lang"] = lang_guess
         await gate_show(update, context)
         return
 
@@ -1300,7 +1388,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = detected_lang
     sessions.setdefault(uid, {})["last_user_text"] = text
 
-    # серьёзные состояния
+    # Серьёзные состояния
     sc = detect_serious(text)
     if sc:
         sessions.setdefault(uid,{})["mode"] = "serious"
@@ -1311,7 +1399,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ask_feedback_soft(uid, context, lang)
         return
 
-    # ожидаемые режимы
+    # Ожидаемые режимы
     if sessions.get(uid, {}).get("awaiting_daily_comment"):
         daily_add(iso(utcnow()), uid, "note", text)
         sessions[uid]["awaiting_daily_comment"] = False
@@ -1347,13 +1435,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = sessions[uid]["p_wait_key"]; sessions[uid]["p_wait_key"] = None
         val = text
         if key in {"age","height_cm","weight_kg"}:
-            m = re.search(r'\d{1,3}', text)
+            m = re.search(r'\d{2,3}', text)
             if m: val = m.group(0)
         profiles_upsert(uid,{key:val}); sessions[uid][key]=val
         users_set(uid, "profile_banner_shown", "no")
         await advance_profile_ctx(context, update.effective_chat.id, lang, uid); return
 
-    # Pain triage
+    # Pain triage (старый поток)
     s = sessions.get(uid, {})
     if s.get("topic") == "pain":
         if re.search(r"\b(stop|exit|back|назад|выход|выйти)\b", text.lower()):
@@ -1373,7 +1461,21 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang, "painrf")); return
             await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_code(lang, "num")); return
 
-    # Разовый баннер профиля
+    # ===== Слот-движок (липкий контекст): если есть issue/слот или ключевое слово ====
+    st = dlg_get(uid)
+    trigger = st.issue or st.last_slot or any(w in text.lower() for w in ["заеда","трещина в уголке","головн","headache"])
+    if trigger:
+        res = dialog_step(st, text)
+        dlg_save(uid, st)
+        if res["type"] in {"ask","reprompt"}:
+            await update.message.reply_text(apply_warm_tone(res["text"], lang))
+            return
+        if res["type"] == "advice":
+            await update.message.reply_text(apply_warm_tone(res["text"], lang), reply_markup=inline_actions(lang))
+            ask_feedback_soft(uid, context, lang)
+            return
+
+    # ===== Единоразовый баннер профиля =====
     if should_show_profile_banner(uid):
         prof = profiles_get(uid)
         banner = profile_banner(lang, prof)
@@ -1381,18 +1483,39 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(banner)
         users_set(uid, "profile_banner_shown", "yes")
 
-    # Роутер LLM
+    # ===== LLM роутер (fallback) =====
     prof = profiles_get(uid)
     data = llm_router_answer(text, lang, prof)
 
-    msg = apply_warm_tone(data.get("assistant_reply") or T[lang]["unknown"], lang)
+    base_reply = data.get("assistant_reply") or T[lang]["unknown"]
+    msg = apply_warm_tone(base_reply, lang)
     await update.message.reply_text(msg, reply_markup=inline_actions(lang))
+
     ask_feedback_soft(uid, context, lang)
+
     for one in (data.get("followups") or [])[:2]:
         await send_unique(update.message, uid, apply_warm_tone(one, lang), force=True)
     return
 
 # ===== Callback handler =====
+def _kb_for_code(lang: str, code: str):
+    if code == "painloc":
+        kb = inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
+    elif code == "painkind":
+        kb = inline_list(T[lang]["triage_pain_q2_opts"], "painkind")
+    elif code == "paindur":
+        kb = inline_list(T[lang]["triage_pain_q3_opts"], "paindur")
+    elif code == "num":
+        kb = inline_numbers_0_10()
+    elif code == "painrf":
+        kb = inline_list(T[lang]["triage_pain_q5_opts"], "painrf")
+    else:
+        kb = None
+    if kb:
+        rows = kb.inline_keyboard + [[InlineKeyboardButton(T[lang]["back"], callback_data="pain|exit")]]
+        return InlineKeyboardMarkup(rows)
+    return None
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     data = (q.data or ""); uid = q.from_user.id
@@ -1570,7 +1693,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["lang"] = lang
     sessions.setdefault(user.id, {})["last_user_text"] = "/start"
     await update.message.reply_text(T[lang]["welcome"], reply_markup=ReplyKeyboardRemove())
-    # баннер профиля 1 раз (если профиль заполнен)
     prof = profiles_get(user.id)
     if prof and should_show_profile_banner(user.id):
         await update.message.reply_text(profile_banner(lang, prof))
@@ -1586,8 +1708,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tz_off = int(str(u.get("tz_offset") or "0"))
     hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
     if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)  # утро
-        schedule_morning_evening(context.application, user.id, tz_off, lang)     # вечер
+        schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)
+        schedule_morning_evening(context.application, user.id, tz_off, lang)
     else:
         logging.warning("JobQueue not available on /start – daily check-ins not scheduled.")
 
@@ -1640,8 +1762,8 @@ async def cmd_settz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     off = int(parts[1]); users_set(uid,"tz_offset",str(off))
     hhmm = users_get(uid).get("checkin_hour") or DEFAULT_CHECKIN_LOCAL
     if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, uid, off, hhmm, lang)  # утро
-        schedule_morning_evening(context.application, uid, off, lang)      # вечер
+        schedule_daily_checkin(context.application, uid, off, hhmm, lang)
+        schedule_morning_evening(context.application, uid, off, lang)
     await update.message.reply_text({"ru":f"Сдвиг часового пояса: {off}ч",
                                      "uk":f"Зсув: {off} год",
                                      "en":f"Timezone offset: {off}h",
@@ -1658,8 +1780,8 @@ async def cmd_checkin_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_set(uid,"checkin_hour",hhmm)
     tz_off = int(str(users_get(uid).get("tz_offset") or "0"))
     if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, uid, tz_off, hhmm, lang)  # утро
-        schedule_morning_evening(context.application, uid, tz_off, lang)      # вечер
+        schedule_daily_checkin(context.application, uid, tz_off, hhmm, lang)
+        schedule_morning_evening(context.application, uid, tz_off, lang)
     else:
         logging.warning("JobQueue not available – daily check-in not scheduled.")
     await update.message.reply_text({"ru":f"Ежедневный чек-ин включён ({hhmm}).",
@@ -1681,13 +1803,11 @@ async def cmd_checkin_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def build_app() -> "Application":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-    # безопасно подключаем PRO-опросник
     try:
         register_intake_pro(app, GSPREAD_CLIENT, on_complete_cb=_ipro_save_to_sheets_and_open_menu)
         logging.info("Intake Pro registered.")
     except Exception as e:
         logging.warning(f"Intake Pro registration failed: {e}")
-    # Commands
     app.add_handler(CommandHandler("start",        cmd_start))
     app.add_handler(CommandHandler("help",         cmd_help))
     app.add_handler(CommandHandler("privacy",      cmd_privacy))
