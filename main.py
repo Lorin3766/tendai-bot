@@ -3,6 +3,8 @@
 # безопасные headers для Sheets, Rules (evidence), мягкий фидбек, баннер профиля (1 раз),
 # тёплый тон (мысль→вопрос), 3 пресета напоминаний, конкретные варианты,
 # АВТО-ПРЕДЛОЖЕНИЕ ОПРОСНИКА С ПЕРВОГО СООБЩЕНИЯ + шаги height_cm/weight_kg/supplements
+#
+# [ADD] 👤 Profile panel banner + 🧠 Daily 60s check-in + Friendly Hi/Hello reply (минимальные дополнения, без ломки основы)
 
 import os, re, json, uuid, logging, random
 from datetime import datetime, timedelta, timezone, time as dtime, date
@@ -154,7 +156,11 @@ T = {
         # Youth quick labels
         "energy_title": "Energy for today:",
         "water_prompt": "Drink 300–500 ml of water. Remind in 2 hours?",
-        "skin_title": "Skin/Body tip:"
+        "skin_title": "Skin/Body tip:",
+        # [ADD] New minimal strings
+        "profile_panel_title": "👤 Your health summary",
+        "hi_reply": "Hi! I’m TendAI. I’m here for your health journey — let’s begin when you’re ready. You can type what’s bothering you, tap /start, or try a 60-second check-in.",
+        "daily60_title": "🧠 Your daily health check-in in 60 seconds"
     },
     "ru": {
         "welcome":"Привет! Я TendAI — ассистент здоровья и долголетия.\nРасскажи, что беспокоит; я подскажу. Сначала короткий опрос (~40с), чтобы советы были точнее.",
@@ -231,7 +237,11 @@ T = {
         "h60_serious": "Что серьёзное исключить",
         "energy_title": "Энергия на сегодня:",
         "water_prompt": "Выпей 300–500 мл воды. Напомнить через 2 часа?",
-        "skin_title": "Совет для кожи/тела:"
+        "skin_title": "Совет для кожи/тела:",
+        # [ADD]
+        "profile_panel_title": "👤 Ваш профиль здоровья",
+        "hi_reply": "Привет! Я TendAI. Я рядом и помогу — начнём, когда будете готовы. Напишите, что беспокоит, нажмите /start или попробуйте 60-секундный чек-ин.",
+        "daily60_title": "🧠 Ежедневный чек-ин здоровья за 60 секунд"
     }
 }
 # Наследуем uk от ru и переопределяем отличия
@@ -241,9 +251,18 @@ T["uk"] = {**T["ru"], **{
     "act_rem_2h": "⏰ Нагадати через 2 год",
     "energy_title": "Енергія на сьогодні:",
     "water_prompt": "Випий 300–500 мл води. Нагадати через 2 години?",
-    "skin_title": "Догляд за шкірою/тілом:"
+    "skin_title": "Догляд за шкірою/тілом:",
+    # [ADD]
+    "profile_panel_title": "👤 Ваш профіль здоров’я",
+    "hi_reply": "Вітаю! Я TendAI. Я поруч і допоможу — почнемо, коли будете готові. Напишіть, що турбує, натисніть /start або спробуйте 60-секундний чек-ін.",
+    "daily60_title": "🧠 Щоденний чек-ін здоров’я за 60 секунд"
 }}
-T["es"] = T["en"]
+T["es"] = {**T["en"], **{
+    # [ADD]
+    "profile_panel_title": "👤 Tu resumen de salud",
+    "hi_reply": "¡Hola! Soy TendAI. Estoy aquí para ayudarte — empezamos cuando quieras. Escribe qué te preocupa, pulsa /start o prueba un check-in de 60 segundos.",
+    "daily60_title": "🧠 Tu check-in de salud diario en 60 segundos"
+}}
 
 # ---------------- Helpers ----------------
 def utcnow():
@@ -734,6 +753,20 @@ async def maybe_send(context: ContextTypes.DEFAULT_TYPE, uid: int, text: str, kb
             mark_sent(uid)
         except Exception as e:
             logging.error(f"send fail: {e}")
+
+# ===== [ADD] Profile Panel helper (не трогаем старую логику; просто раньше показываем «панель») =====
+async def maybe_show_profile_panel(context: ContextTypes.DEFAULT_TYPE, uid: int, lang: str, chat_id: int):
+    try:
+        if should_show_profile_banner(uid):
+            prof = profiles_get(uid)
+            banner = profile_banner(lang, prof).strip()
+            if banner.strip().strip("—"):
+                title = T[lang].get("profile_panel_title", "👤 Profile")
+                await context.bot.send_message(chat_id, f"{title}\n{banner}")
+            users_set(uid, "profile_banner_shown", "yes")
+    except Exception as e:
+        logging.warning(f"profile panel send error: {e}")
+
 # ------------- Jobs -------------
 async def job_checkin_episode(context: ContextTypes.DEFAULT_TYPE):
     d = context.job.data or {}
@@ -1144,6 +1177,18 @@ async def cmd_skin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }[lang]
     await update.message.reply_text(T[lang]["skin_title"] + "\n" + tip, reply_markup=inline_actions(lang))
 
+# ===== [ADD] Friendly Hi/Hello handler (не вмешивается в /start) =====
+async def cmd_hi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip().lower()
+    uid = update.effective_user.id
+    # определяем язык из уже сохранённого или по сообщению
+    saved = users_get(uid).get("lang")
+    lang_guess = detect_lang_from_text(text, norm_lang(saved or getattr(update.effective_user, "language_code", None) or "en"))
+    lang = norm_lang(lang_guess)
+    # дружественный ответ + сразу полезная кнопка
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["h60_btn"], callback_data="act|h60")]])
+    await update.message.reply_text(T[lang]["hi_reply"], reply_markup=kb)
+
 # ===== Pain triage вспомогательные =====
 def _kb_for_code(lang: str, code: str):
     if code == "painloc":
@@ -1187,39 +1232,48 @@ PROFILE_STEPS = [
     {"key":"sex","opts":{"ru":[("Мужчина","male"),("Женщина","female"),("Другое","other")],
                          "en":[("Male","male"),("Female","female"),("Other","other")],
                          "uk":[("Чоловіча","male"),("Жіноча","female"),("Інша","other")],
-                         "es":[("Hombre","male"),("Mujer","female"),("Otro","other")]}},
+                         "es":[("Hombre","male"),("Mujer","female"),("Otro","other")]}}
+    ,
     {"key":"age","opts":{"ru":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
                          "en":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
                          "uk":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
-                         "es":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")]}},
+                         "es":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")]}}
+    ,
     {"key":"height_cm","opts":{"ru":[("160","160"),("170","170"),("180","180")],
                                "en":[("160","160"),("170","170"),("180","180")],
                                "uk":[("160","160"),("170","170"),("180","180")],
-                               "es":[("160","160"),("170","170"),("180","180")]}},
+                               "es":[("160","160"),("170","170"),("180","180")]}}
+    ,
     {"key":"weight_kg","opts":{"ru":[("60","60"),("75","75"),("90","90")],
                                "en":[("60","60"),("75","75"),("90","90")],
                                "uk":[("60","60"),("75","75"),("90","90")],
-                               "es":[("60","60"),("75","75"),("90","90")]}},
+                               "es":[("60","60"),("75","75"),("90","90")]}}
+    ,
     {"key":"goal","opts":{"ru":[("Похудение","weight"),("Энергия","energy"),("Сон","sleep"),("Долголетие","longevity"),("Сила","strength")],
                           "en":[("Weight","weight"),("Energy","energy"),("Sleep","sleep"),("Longevity","longevity"),("Strength","strength")],
                           "uk":[("Вага","weight"),("Енергія","energy"),("Сон","sleep"),("Довголіття","longevity"),("Сила","strength")],
-                          "es":[("Peso","weight"),("Energía","energy"),("Sueño","sleep"),("Longevidad","longevity"),("Fuerza","strength")]}},
+                          "es":[("Peso","weight"),("Energía","energy"),("Sueño","sleep"),("Longevidad","longevity"),("Fuerza","strength")]}}
+    ,
     {"key":"conditions","opts":{"ru":[("Нет","none"),("Гипертония","hypertension"),("Диабет","diabetes"),("Щитовидка","thyroid"),("Другое","other")],
                                "en":[("None","none"),("Hypertension","hypertension"),("Diabetes","diabetes"),("Thyroid","thyroid"),("Other","other")],
                                "uk":[("Немає","none"),("Гіпертонія","hypertension"),("Діабет","diabetes"),("Щитоподібна","thyroid"),("Інше","other")],
-                               "es":[("Ninguna","none"),("Hipertensión","hypertension"),("Diabetes","diabetes"),("Tiroides","thyroid"),("Otra","other")]}},
+                               "es":[("Ninguna","none"),("Hipertensión","hypertension"),("Diabetes","diabetes"),("Tiroides","thyroid"),("Otra","other")]}}
+    ,
     {"key":"meds","opts":{"ru":[("Нет","none"),("Магний","magnesium"),("Витамин D","vitd"),("Аллергии есть","allergies"),("Другое","other")],
                           "en":[("None","none"),("Magnesium","magnesium"),("Vitamin D","vitd"),("Allergies","allergies"),("Other","other")],
                           "uk":[("Немає","none"),("Магній","magnesium"),("Вітамін D","vitd"),("Алергії","allergies"),("Інше","other")],
-                          "es":[("Ninguno","none"),("Magnesio","magnesium"),("Vitamina D","vitd"),("Alergias","allergies"),("Otro","other")]}},
+                          "es":[("Ninguno","none"),("Magnesio","magnesium"),("Vitamina D","vitd"),("Alergias","allergies"),("Otro","other")]}}
+    ,
     {"key":"supplements","opts":{"ru":[("Нет","none"),("Омега-3","omega3"),("Креатин","creatine"),("Протеин","protein"),("Другое","other")],
                                 "en":[("None","none"),("Omega-3","omega3"),("Creatine","creatine"),("Protein","protein"),("Other","other")],
                                 "uk":[("Немає","none"),("Омега-3","omega3"),("Креатин","creatine"),("Протеїн","protein"),("Інше","other")],
-                                "es":[("Ninguno","none"),("Omega-3","omega3"),("Creatina","creatine"),("Proteína","protein"),("Otro","other")]}},
+                                "es":[("Ninguno","none"),("Omega-3","omega3"),("Creatina","creatine"),("Proteína","protein"),("Otro","other")]}}
+    ,
     {"key":"sleep","opts":{"ru":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
                            "en":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")],
                            "uk":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
-                           "es":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")]}},
+                           "es":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")]}}
+    ,
     {"key":"activity","opts":{"ru":[("<5к шагов","<5k"),("5–8к","5-8k"),("8–12к","8-12k"),("Спорт регулярно","sport")],
                              "en":[("<5k steps","<5k"),("5–8k","5-8k"),("8–12k","8-12k"),("Regular sport","sport")],
                              "uk":[("<5к кроків","<5k"),("5–8к","5-8k"),("8–12к","8-12k"),("Спорт регулярно","sport")],
@@ -1254,6 +1308,18 @@ async def advance_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
             "sex":1,"age":2,"height_cm":3,"weight_kg":4,"goal":5,"conditions":6,"meds":7,
             "supplements":8,"sleep":9,"activity":10
         }
+    # (Часть 2 продолжится отсюда)
+async def advance_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
+    s = sessions.get(uid, {})
+    s["p_step"] += 1
+    if s["p_step"] < len(PROFILE_STEPS):
+        idx = s["p_step"]; step = PROFILE_STEPS[idx]
+        kb = build_profile_kb(lang, step["key"], step["opts"][lang])
+        # текст шага соответствует локализации (1..10)
+        key_to_idx = {
+            "sex":1,"age":2,"height_cm":3,"weight_kg":4,"goal":5,"conditions":6,"meds":7,
+            "supplements":8,"sleep":9,"activity":10
+        }
         num = key_to_idx.get(step["key"], idx+1)
         await context.bot.send_message(chat_id, T[lang][f"p_step_{num}"], reply_markup=kb)
         return
@@ -1266,6 +1332,12 @@ async def advance_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
     sessions[uid]["profile_active"] = False
     users_set(uid, "profile_banner_shown", "no")
     await context.bot.send_message(chat_id, T[lang]["saved_profile"] + "; ".join(summary))
+    # 👤 Однократная панель профиля (без ломки логики)
+    try:
+        # функция добавлена в Часть 1
+        await maybe_show_profile_panel(context, uid, lang)
+    except Exception:
+        pass
     await context.bot.send_message(chat_id, T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
 
 # ===== Основной текстовый обработчик =====
@@ -1281,6 +1353,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users_upsert(uid, user.username or "", lang_guess)
         sessions.setdefault(uid, {})["last_user_text"] = text
         await update.message.reply_text(T[lang_guess]["welcome"], reply_markup=ReplyKeyboardRemove())
+        # уникальный элемент: 60-секундный чек-ин
+        try:
+            await update.message.reply_text("🧠 " + T[lang_guess].get("daily60_title", "Your daily health check-in in 60 seconds"))
+        except Exception:
+            pass
         await update.message.reply_text(T[lang_guess]["start_where"], reply_markup=inline_topic_kb(lang_guess))
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang_guess]["yes"], callback_data="consent|yes"),
                                     InlineKeyboardButton(T[lang_guess]["no"],  callback_data="consent|no")]])
@@ -1291,6 +1368,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # сразу предлагаем пройти intake (gate)
         context.user_data["lang"] = lang_guess
         await gate_show(update, context)
+        # 👤 однократная панель профиля, если есть
+        try:
+            await maybe_show_profile_panel(context, uid, lang_guess)
+        except Exception:
+            pass
         return
 
     saved_lang = norm_lang(urec.get("lang") or getattr(user,"language_code",None))
@@ -1299,6 +1381,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users_set(uid,"lang",detected_lang)
     lang = detected_lang
     sessions.setdefault(uid, {})["last_user_text"] = text
+
+    # === Дружелюбная реакция на приветствия (если пользователь не делал /start или просто поздоровался) ===
+    if re.match(r'^\s*(hi|hello|hola|привет|здравствуй|здравствуйте)\b', text, flags=re.I):
+        # лёгкий ответ + подсказка Health60, не ломая основной поток
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["h60_btn"], callback_data="act|h60")]])
+        await update.message.reply_text(T[lang].get("hi_reply", "Hi! I’m here for your health journey — let’s begin when you’re ready."), reply_markup=kb)
 
     # серьёзные состояния
     sc = detect_serious(text)
@@ -1381,6 +1469,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(banner)
         users_set(uid, "profile_banner_shown", "yes")
 
+    # 👤 Плашка с кратким резюме (если доступна и не показывалась)
+    try:
+        await maybe_show_profile_panel(context, uid, lang)
+    except Exception:
+        pass
+
     # Роутер LLM
     prof = profiles_get(uid)
     data = llm_router_answer(text, lang, prof)
@@ -1392,7 +1486,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_unique(update.message, uid, apply_warm_tone(one, lang), force=True)
     return
 
-# ===== Callback handler =====
+# ===== Callback handler (без изменений логики) =====
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     data = (q.data or ""); uid = q.from_user.id
@@ -1563,6 +1657,17 @@ async def post_init(app):
     me = await app.bot.get_me()
     logging.info(f"BOT READY: @{me.username} (id={me.id})")
 
+# дружелюбное приветствие по ключевым словам (Hi/Hello/Привет)
+async def cmd_hi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    # определяем язык по уже сохранённому или по фразе
+    saved_lang = users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None) or "en"
+    lang = detect_lang_from_text(update.message.text or "", norm_lang(saved_lang))
+    # Ненавязчивый ответ + кнопка Health in 60s
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[norm_lang(lang)]["h60_btn"], callback_data="act|h60")]])
+    await update.message.reply_text(T[norm_lang(lang)].get("hi_reply", "Hi! I’m here for your health journey — let’s begin when you’re ready."),
+                                    reply_markup=kb)
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = norm_lang(getattr(user, "language_code", None))
@@ -1570,11 +1675,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["lang"] = lang
     sessions.setdefault(user.id, {})["last_user_text"] = "/start"
     await update.message.reply_text(T[lang]["welcome"], reply_markup=ReplyKeyboardRemove())
+    # 👤 панель профиля (если уже есть данные)
+    try:
+        await maybe_show_profile_panel(context, user.id, lang)
+    except Exception:
+        pass
     # баннер профиля 1 раз (если профиль заполнен)
     prof = profiles_get(user.id)
     if prof and should_show_profile_banner(user.id):
         await update.message.reply_text(profile_banner(lang, prof))
         users_set(user.id, "profile_banner_shown", "yes")
+    # уникальный элемент — 60-секундный health check-in
+    try:
+        await update.message.reply_text("🧠 " + T[lang].get("daily60_title", "Your daily health check-in in 60 seconds"))
+    except Exception:
+        pass
     await update.message.reply_text(T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
     if not profiles_get(user.id) and not context.user_data.get(GATE_FLAG_KEY):
         await gate_show(update, context)
@@ -1710,10 +1825,14 @@ def build_app() -> "Application":
     app.add_handler(CommandHandler("en", lambda u,c: users_set(u.effective_user.id,"lang","en")  or u.message.reply_text("OK, I’ll reply in English.")))
     app.add_handler(CommandHandler("uk", lambda u,c: users_set(u.effective_user.id,"lang","uk")  or u.message.reply_text("Ок, надалі відповідатиму українською.")))
     app.add_handler(CommandHandler("es", lambda u,c: users_set(u.effective_user.id,"lang","es")  or u.message.reply_text("De acuerdo, responderé en español.")))
+
+    # === NEW: дружелюбный хендлер приветствий (должен быть ДО общего text-хендлера) ===
+    app.add_handler(MessageHandler(filters.Regex(r"^\s*(?i)(hi|hello|hola|привет|здравствуй|здравствуйте)\b"), cmd_hi))
+
     # Gate & callbacks
     app.add_handler(CallbackQueryHandler(gate_cb, pattern=r"^gate:"))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^(?!intake:)"))
-    # Text
+    # Text (общий)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     return app
 
