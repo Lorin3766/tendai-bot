@@ -4,7 +4,7 @@
 # тёплый тон (мысль→вопрос), 3 пресета напоминаний, конкретные варианты,
 # АВТО-ПРЕДЛОЖЕНИЕ ОПРОСНИКА С ПЕРВОГО СООБЩЕНИЯ + шаги height_cm/weight_kg/supplements
 # + Главное меню, Smart check-in, Habits Quick-log, Micro-plans, Find care, Language switch,
-# контекстные чипы, /menu, и фикс синтаксической ошибки.
+#   контекстные чипы, /menu, и фикс синтаксической ошибки.
 
 import os, re, json, uuid, logging, random
 from datetime import datetime, timedelta, timezone, time as dtime, date
@@ -13,8 +13,10 @@ from difflib import SequenceMatcher
 
 from dotenv import load_dotenv
 from langdetect import detect, DetectorFactory
+
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardRemove
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -53,6 +55,7 @@ DetectorFactory.seed = 0
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+
 SHEET_NAME = os.getenv("SHEET_NAME", "TendAI Sheets")
 SHEET_ID = os.getenv("SHEET_ID", "")
 ALLOW_CREATE_SHEET = os.getenv("ALLOW_CREATE_SHEET", "0") == "1"
@@ -69,8 +72,10 @@ except Exception as e:
 
 # ---------------- i18n ----------------
 SUPPORTED = {"ru", "en", "uk", "es"}
+
 def norm_lang(code: Optional[str]) -> str:
-    if not code: return "en"
+    if not code:
+        return "en"
     c = code.split("-")[0].lower()
     return c if c in SUPPORTED else "en"
 
@@ -250,7 +255,7 @@ T = {
         "m_h60": "🩺 Здоровье за 60 секунд",
         "m_mini": "🔁 Мини-планы",
         "m_care": "🧪 Куда обратиться",
-        "m_hab": "📊 Быстрый лог привычек",
+        "m_hab": "📊 Быстный лог привычек",
         "m_rem": "🗓 Напомнить",
         "m_lang": "🌐 Язык",
         "m_privacy": "🔒 Приватность и как это работает",
@@ -285,13 +290,16 @@ T["uk"] = {**T["ru"], **{
 T["es"] = T["en"]
 
 # ---------------- Helpers ----------------
-def utcnow(): return datetime.now(timezone.utc)
+def utcnow():
+    return datetime.now(timezone.utc)
+
 def iso(dt: Optional[datetime]) -> str:
     return "" if not dt else dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z")
 
 def detect_lang_from_text(text: str, fallback: str) -> str:
     s = (text or "").strip()
-    if not s: return fallback
+    if not s:
+        return fallback
     low = s.lower()
     if re.search(r"[а-яёіїєґ]", low):
         return "uk" if re.search(r"[іїєґ]", low) else "ru"
@@ -304,10 +312,16 @@ def profile_is_incomplete(profile_row: dict) -> bool:
     keys = ["sex","age","goal"]
     return sum(1 for k in keys if str(profile_row.get(k) or "").strip()) < 2
 
+# === безопасный A1 helper для вырезания номера строки ===
+def _a1_col_only(a1: str) -> str:
+    return re.sub(r"\d+$", "", a1 or "")
+
 # ===== ONBOARDING GATE =====
 GATE_FLAG_KEY = "menu_unlocked"
+
 def _is_menu_unlocked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    if context.user_data.get(GATE_FLAG_KEY): return True
+    if context.user_data.get(GATE_FLAG_KEY):
+        return True
     prof = profiles_get(update.effective_user.id) or {}
     return not profile_is_incomplete(prof)
 
@@ -427,6 +441,7 @@ def _sheets_init():
         credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
         gclient = gspread.authorize(credentials)
         GSPREAD_CLIENT = gclient
+
         try:
             ss = gclient.open_by_key(SHEET_ID) if SHEET_ID else gclient.open(SHEET_NAME)
         except SpreadsheetNotFound:
@@ -434,6 +449,7 @@ def _sheets_init():
                 ss = gclient.create(SHEET_NAME)
             else:
                 raise
+
         try:
             SPREADSHEET_ID_FOR_INTAKE = ss.id
         except Exception:
@@ -453,17 +469,18 @@ def _sheets_init():
                 head = vals[0]
                 if len(head) < len(headers):
                     pad = headers[len(head):]
-                    ws.update(range_name=f"{gsu.rowcol_to_a1(1,len(head)+1)}:{gsu.rowcol_to_a1(1,len(headers))}", values=[pad])
+                    ws.update(range_name=f"{gsu.rowcol_to_a1(1,len(head)+1)}:{gsu.rowcol_to_a1(1,len(headers))}",
+                              values=[pad])
             return ws
 
         ws_feedback = _ensure_ws("Feedback", FEEDBACK_HEADERS)
-        ws_users = _ensure_ws("Users", USERS_HEADERS)
+        ws_users    = _ensure_ws("Users", USERS_HEADERS)
         ws_profiles = _ensure_ws("Profiles", PROFILES_HEADERS)
         ws_episodes = _ensure_ws("Episodes", EPISODES_HEADERS)
         ws_reminders= _ensure_ws("Reminders", REMINDERS_HEADERS)
-        ws_daily = _ensure_ws("DailyCheckins", DAILY_HEADERS)
-        ws_rules = _ensure_ws("Rules", RULES_HEADERS)
-        ws_habits = _ensure_ws("HabitsLog", HABITS_HEADERS)
+        ws_daily    = _ensure_ws("DailyCheckins", DAILY_HEADERS)
+        ws_rules    = _ensure_ws("Rules", RULES_HEADERS)
+        ws_habits   = _ensure_ws("HabitsLog", HABITS_HEADERS)
         logging.info("Google Sheets connected.")
     except Exception as e:
         SHEETS_ENABLED = False
@@ -485,7 +502,8 @@ MEM_HABITS: List[dict] = []
 sessions: Dict[int, dict] = {}
 
 # -------- Sheets wrappers --------
-def _headers(ws): return ws.row_values(1)
+def _headers(ws):
+    return ws.row_values(1)
 
 def users_get(uid: int) -> dict:
     if SHEETS_ENABLED:
@@ -521,8 +539,8 @@ def users_upsert(uid: int, username: str, lang: str):
                 merged = {h: r.get(h, "") for h in USERS_HEADERS}
                 merged["user_id"] = str(uid)
                 if username: merged["username"] = username
-                if lang: merged["lang"] = lang
-                end_col = gsu.rowcol_to_a1(1, len(USERS_HEADERS)).rstrip("1")
+                if lang:     merged["lang"] = lang
+                end_col = _a1_col_only(gsu.rowcol_to_a1(1, len(USERS_HEADERS)))
                 ws_users.update(
                     range_name=f"A{i}:{end_col}{i}",
                     values=[[merged.get(h, "") for h in USERS_HEADERS]]
@@ -533,7 +551,7 @@ def users_upsert(uid: int, username: str, lang: str):
         prev = MEM_USERS.get(uid, {})
         merged = {**base, **prev}
         if username: merged["username"] = username
-        if lang: merged["lang"] = lang
+        if lang:     merged["lang"] = lang
         MEM_USERS[uid] = merged
 
 def users_set(uid: int, field: str, value: str):
@@ -544,6 +562,8 @@ def users_set(uid: int, field: str, value: str):
                 hdr = USERS_HEADERS
                 if field in hdr:
                     ws_users.update_cell(i, hdr.index(field)+1, value)
+                else:
+                    logging.warning(f"users_set: unknown field {field}")
                 return
     else:
         u = MEM_USERS.setdefault(uid, {})
@@ -571,7 +591,7 @@ def profiles_upsert(uid: int, data: dict):
             current[k] = "" if v is None else (", ".join(v) if isinstance(v,list) else str(v))
         current["updated_at"] = iso(utcnow())
         values = [current.get(h,"") for h in hdr]
-        end_col = gsu.rowcol_to_a1(1, len(hdr)).rstrip("1")
+        end_col = _a1_col_only(gsu.rowcol_to_a1(1, len(hdr)))
         if idx:
             ws_profiles.update(range_name=f"A{idx}:{end_col}{idx}", values=[values])
         else:
@@ -609,7 +629,8 @@ def episode_find_open(uid: int) -> Optional[dict]:
 def episode_set(eid: str, field: str, value: str):
     if SHEETS_ENABLED:
         vals = ws_episodes.get_all_values(); hdr = vals[0]
-        if field not in hdr: return
+        if field not in hdr:
+            return
         col = hdr.index(field)+1
         for i in range(2, len(vals)+1):
             if ws_episodes.cell(i,1).value == eid:
@@ -662,8 +683,7 @@ def daily_add(ts, uid, mood, comment):
 def habits_add(uid: int, typ: str, value: Optional[str], unit: Optional[str]) -> int:
     """Append habit row and return current streak (naive: consecutive days incl. today)."""
     ts = iso(utcnow())
-    rec = {"timestamp":ts,"user_id":str(uid),"type":typ,"value":value or "1","unit":unit or "",
-           "streak":"0"}
+    rec = {"timestamp":ts,"user_id":str(uid),"type":typ,"value":value or "1","unit":unit or "", "streak":"0"}
     # write first (streak after)
     if SHEETS_ENABLED:
         ws_habits.append_row([rec.get(h,"") for h in HABITS_HEADERS])
@@ -686,8 +706,10 @@ def habits_add(uid: int, typ: str, value: Optional[str], unit: Optional[str]) ->
     for r in rows_sorted:
         d = _to_date(r)
         if d == expected:
-            if streak == 0: streak = 1
-            else: streak += 1
+            if streak == 0:
+                streak = 1
+            else:
+                streak += 1
             expected = expected - timedelta(days=1)
         elif d < expected:
             break
@@ -702,6 +724,7 @@ def habits_add(uid: int, typ: str, value: Optional[str], unit: Optional[str]) ->
 # --------- JobQueue helper ----------
 def _has_jq_app(app) -> bool:
     return getattr(app, "job_queue", None) is not None
+
 def _has_jq_ctx(context: ContextTypes.DEFAULT_TYPE) -> bool:
     try:
         return getattr(context.application, "job_queue", None) is not None
@@ -769,8 +792,10 @@ def schedule_morning_evening(app, uid:int, tz_off:int, lang:str, evening="20:30"
         j.schedule_removal()
     h_e, m_e = hhmm_tuple(evening); h_e = (h_e - tz_off) % 24
     app.job_queue.run_daily(
-        job_evening_checkin, dtime(hour=h_e, minute=m_e, tzinfo=timezone.utc),
-        name=f"daily_e_{uid}", data={"user_id":uid,"lang":lang}
+        job_evening_checkin,
+        dtime(hour=h_e, minute=m_e, tzinfo=timezone.utc),
+        name=f"daily_e_{uid}",
+        data={"user_id":uid,"lang":lang}
     )
 
 # ------------- Лимитер авто-сообщений + тихие часы -------------
@@ -783,7 +808,7 @@ def _in_quiet(uid: int, now_utc: datetime) -> bool:
     tz_off = int(str(u.get("tz_offset") or "0"))
     local = now_utc + timedelta(hours=tz_off)
     start = local.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
-    end = local.replace(hour=int(m.group(3)), minute=int(m.group(4)), second=0, microsecond=0)
+    end   = local.replace(hour=int(m.group(3)), minute=int(m.group(4)), second=0, microsecond=0)
     if end <= start:
         return local >= start or local <= end
     return start <= local <= end
@@ -792,6 +817,18 @@ def can_send(uid: int) -> bool:
     u = users_get(uid)
     if (u.get("paused") or "").lower() == "yes": return False
     if _in_quiet(uid, utcnow()): return False
+    # авто-сброс sent_today при смене локального дня
+    tz_off = int(str(u.get("tz_offset") or "0"))
+    last = u.get("last_sent_utc") or ""
+    if last:
+        try:
+            last_local = (datetime.strptime(last, "%Y-%m-%d %H:%M:%S%z")
+                          .astimezone(timezone.utc) + timedelta(hours=tz_off)).date()
+            today_local = (utcnow() + timedelta(hours=tz_off)).date()
+            if last_local != today_local:
+                users_set(uid, "sent_today", "0")
+        except Exception:
+            pass
     sent_today = int(str(u.get("sent_today") or "0"))
     return sent_today < 2
 
@@ -800,7 +837,7 @@ def mark_sent(uid: int):
     tz_off = int(str(u.get("tz_offset") or "0"))
     last = u.get("last_sent_utc") or ""
     today_local = (utcnow() + timedelta(hours=tz_off)).date()
-    last_local = None
+    last_local  = None
     if last:
         try:
             last_local = (datetime.strptime(last, "%Y-%m-%d %H:%M:%S%z").astimezone(timezone.utc) + timedelta(hours=tz_off)).date()
@@ -864,7 +901,9 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
     sys = SYS_ROUTER.replace("{lang}", lang) + f"\nUserProfile: {json.dumps(profile, ensure_ascii=False)}"
     try:
         resp = oai.chat.completions.create(
-            model=OPENAI_MODEL, temperature=0.25, max_tokens=420,
+            model=OPENAI_MODEL,
+            temperature=0.25,
+            max_tokens=420,
             response_format={"type":"json_object"},
             messages=[{"role":"system","content":sys},{"role":"user","content":text}]
         )
@@ -879,38 +918,49 @@ def llm_router_answer(text: str, lang: str, profile: dict) -> dict:
 
 # ===== Rules-based подсказки =====
 def rules_match(seg: str, prof: dict) -> bool:
-    if not seg: return True
+    if not seg:
+        return True
     for part in seg.split("&"):
         m = re.match(r'(\w+)\s*(>=|<=|=|>|<)\s*([\w\-]+)', part.strip())
-        if not m: return False
+        if not m:
+            return False
         k, op, v = m.groups()
         pv = (prof.get(k) or prof.get(k.lower()) or "")
         if k in ("age", "steps_target", "cycle_avg_len","height_cm","weight_kg"):
+            pv_num = re.search(r'\d+', str(pv or ""))
+            if not pv_num:
+                return False
             try:
-                pv = int(re.search(r'\d+', str(pv)).group()); v = int(v)
+                pv = int(pv_num.group())
+                v = int(v)
             except Exception:
                 return False
         else:
-            pv = str(pv).lower(); v = str(v).lower()
+            pv = str(pv).lower()
+            v = str(v).lower()
         if op == "=" and not (pv == v): return False
         if op == ">=" and not (pv >= v): return False
         if op == "<=" and not (pv <= v): return False
-        if op == ">" and not (pv > v): return False
-        if op == "<" and not (pv < v): return False
+        if op == ">"  and not (pv >  v): return False
+        if op == "<"  and not (pv <  v): return False
     return True
 
 def _read_rules():
-    if SHEETS_ENABLED: return ws_records(ws_rules, RULES_HEADERS)
+    if SHEETS_ENABLED:
+        return ws_records(ws_rules, RULES_HEADERS)
     return MEM_RULES
 
 def pick_nutrition_tips(lang: str, prof: dict, limit: int = 2) -> List[str]:
     tips = []
     for r in _read_rules():
-        if (r.get("domain") or "").lower() != "nutrition": continue
-        if (r.get("lang") or "en") != lang: continue
+        if (r.get("domain") or "").lower() != "nutrition":
+            continue
+        if (r.get("lang") or "en") != lang:
+            continue
         if rules_match(r.get("segment") or "", prof):
             t = (r.get("text") or "").strip()
-            if t: tips.append(t)
+            if t:
+                tips.append(t)
     random.shuffle(tips)
     return tips[:limit]
 
@@ -921,12 +971,12 @@ def cycle_phase_for(uid: int) -> Optional[str]:
         return None
     try:
         last = datetime.strptime(str(prof.get("cycle_last_date")), "%Y-%m-%d").date()
-        avg = int(str(prof.get("cycle_avg_len") or "28"))
+        avg  = int(str(prof.get("cycle_avg_len") or "28"))
     except Exception:
         return None
     day = ((utcnow().date() - last).days % max(avg, 21)) + 1
-    if 1 <= day <= 5: return "menses"
-    if 6 <= day <= 13: return "follicular"
+    if 1 <= day <= 5:   return "menses"
+    if 6 <= day <= 13:  return "follicular"
     if 14 <= day <= 15: return "ovulation"
     return "luteal"
 
@@ -956,7 +1006,8 @@ async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
     d = context.job.data or {}
     uid, lang = d.get("user_id"), d.get("lang","en")
     u = users_get(uid)
-    if (u.get("paused") or "").lower()=="yes": return
+    if (u.get("paused") or "").lower()=="yes":
+        return
     # приветствие + настроение (утро)
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(T[lang]["mood_good"], callback_data="mood|good"),
@@ -965,11 +1016,13 @@ async def job_daily_checkin(context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(T[lang]["mood_note"], callback_data="mood|note")]
     ])
     await maybe_send(context, uid, T[lang]["daily_gm"], kb)
+
     # 1–2 совета по питанию из Rules
     prof = profiles_get(uid)
     tips = pick_nutrition_tips(lang, prof, limit=2)
     if tips:
         await maybe_send(context, uid, "• " + "\n• ".join(tips))
+
     # деликатный совет по фазе цикла (если включено)
     phase = cycle_phase_for(uid)
     if phase:
@@ -982,11 +1035,12 @@ async def job_evening_checkin(context: ContextTypes.DEFAULT_TYPE):
     d = context.job.data or {}
     uid, lang = d.get("user_id"), d.get("lang","en")
     u = users_get(uid)
-    if (u.get("paused") or "").lower()=="yes": return
+    if (u.get("paused") or "").lower()=="yes":
+        return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(T[lang]["mood_good"], callback_data="mood|good"),
-         InlineKeyboardButton(T[lang]["mood_ok"], callback_data="mood|ok"),
-         InlineKeyboardButton(T[lang]["mood_bad"], callback_data="mood|bad")],
+         InlineKeyboardButton(T[lang]["mood_ok"],   callback_data="mood|ok"),
+         InlineKeyboardButton(T[lang]["mood_bad"],  callback_data="mood|bad")],
         [InlineKeyboardButton(T[lang]["mood_note"], callback_data="mood|note")]
     ])
     await maybe_send(context, uid, T[lang]["daily_pm"], kb)
@@ -998,1245 +1052,163 @@ SERIOUS_KWS = {
     "cancer":["cancer","рак","онко","онколог","опухол","пухлина","tumor"],
     "tb":["tuberculosis","tb","туберкул","туберкульоз"],
 }
+
 def detect_serious(text: str) -> Optional[str]:
     low = (text or "").lower()
     for cond, kws in SERIOUS_KWS.items():
         if any(k in low for k in kws):
             return cond
     return None
-
-# ===== Персонализированный префикс/баннер (показывать 1 раз) =====
-def _ru_age_phrase(age_str: str) -> str:
-    try:
-        n = int(re.search(r"\d+", age_str).group())
-    except Exception:
-        return age_str
-    last2 = n % 100
-    last1 = n % 10
-    if 11 <= last2 <= 14: word = "лет"
-    elif last1 == 1: word = "год"
-    elif 2 <= last1 <= 4: word = "года"
-    else: word = "лет"
-    return f"{n} {word}"
-
-def profile_banner(lang: str, profile: dict) -> str:
-    sex = str(profile.get("sex") or "").strip().lower()
-    age_raw = str(profile.get("age") or "").strip()
-    goal = (profile.get("goal") or profile.get("goals") or "").strip()
-    ht = (profile.get("height_cm") or "").strip()
-    wt = (profile.get("weight_kg") or "").strip()
-    if lang == "ru":
-        sex_ru = {"male":"мужчина","female":"женщина","other":"человек"}.get(sex, "человек")
-        age_ru = _ru_age_phrase(age_raw or "—")
-        goal_ru = {"longevity":"долголетие","energy":"энергия","sleep":"сон","weight":"похудение","strength":"сила"}.get(goal, goal or "—")
-        hw = f", {ht}см/{wt}кг" if (ht or wt) else ""
-        return f"{sex_ru}, {age_ru}{hw}; цель — {goal_ru}"
-    if lang == "uk":
-        hw = f", {ht}см/{wt}кг" if (ht or wt) else ""
-        return f"{sex or '—'}, {age_raw or '—'}{hw}; ціль — {goal or '—'}"
-    if lang == "es":
-        hw = f", {ht}cm/{wt}kg" if (ht or wt) else ""
-        return f"{sex or '—'}, {age_raw or '—'}{hw}; objetivo — {goal or '—'}"
-    # EN — fixed
-    hw = f", {ht}cm/{wt}kg" if (ht or wt) else ""
-    return f"{sex or '—'}, {age_raw or '—'}{hw}; goal — {goal or '—'}"
-
-def should_show_profile_banner(uid: int) -> bool:
-    u = users_get(uid)
-    return (u.get("profile_banner_shown") or "no") != "yes"
-
-def apply_warm_tone(text: str, lang: str) -> str:
-    return re.sub(r"\n{3,}", "\n\n", (text or "").strip())
-
-def ask_feedback_soft(uid: int, context: ContextTypes.DEFAULT_TYPE, lang: str):
-    try:
-        u = users_get(uid)
-        last = (u.get("last_fb_asked") or "").strip()
-        today = (utcnow() + timedelta(hours=int(str(u.get("tz_offset") or "0")))).date().isoformat()
-        if last == today: return
-        kb = inline_feedback_kb(lang)
-        context.application.create_task(context.bot.send_message(uid, T[lang]["ask_fb"], reply_markup=kb))
-        users_set(uid, "last_fb_asked", today)
-    except Exception as e:
-        logging.warning(f"ask_feedback_soft error: {e}")
-
-# ===== Планы и кнопки =====
-def pain_plan(lang: str, red_flags_selected: List[str], profile: dict) -> List[str]:
-    flg = [s for s in red_flags_selected if s and str(s).lower() not in ["none","нет","немає","ninguno","no"]]
-    if flg:
-        return {"ru":["⚠️ Есть тревожные признаки. Лучше как можно скорее показаться врачу/в скорую."],
-                "uk":["⚠️ Є тривожні ознаки. Варто якнайшвидше звернутися до лікаря/швидкої."],
-                "en":["⚠️ Red flags present. Please seek urgent medical evaluation."],
-                "es":["⚠️ Señales de alarma presentes. Busca evaluación médica urgente."]}[lang]
-    age_num = 0
-    try:
-        age_num = int(re.search(r"\d+", str(profile.get("age") or "")).group(0))
-    except Exception:
-        age_num = 0
-    extra = []
-    if age_num >= 60:
-        extra.append({"ru":"Вам 60+, будьте осторожны с НПВП; пейте воду и при ухудшении обратитесь к врачу.",
-                      "uk":"Вам 60+, обережно з НПЗЗ; пийте воду, за погіршення — до лікаря.",
-                      "en":"Age 60+: be careful with NSAIDs; hydrate and seek care if worsening.",
-                      "es":"Edad 60+: cuidado con AINEs; hidrátate y busca atención si empeora."}[lang])
-    core = {"ru":["1) Вода 400–600 мл и 15–20 мин тишины/отдыха.",
-                  "2) Если нет противопоказаний — ибупрофен 200–400 мг однократно с едой.",
-                  "3) Проветрить, уменьшить экран на 30–60 мин.","Цель: к вечеру боль ≤3/10."],
-            "uk":["1) Вода 400–600 мл і 15–20 хв спокою.",
-                  "2) Якщо нема протипоказань — ібупрофен 200–400 мг одноразово з їжею.",
-                  "3) Провітрити, менше екрану 30–60 хв.","Мета: до вечора біль ≤3/10."],
-            "en":["1) Drink 400–600 ml water; rest 15–20 min.",
-                  "2) If no contraindications — ibuprofen 200–400 mg once with food.",
-                  "3) Air the room; reduce screen time 30–60 min.","Goal: by evening pain ≤3/10."],
-            "es":["1) Bebe 400–600 ml de agua; descansa 15–20 min.",
-                  "2) Si no hay contraindicaciones — ibuprofeno 200–400 mg una vez con comida.",
-                  "3) Ventila la habitación; reduce pantallas 30–60 min.","Meta: por la tarde dolor ≤3/10."]}[lang]
-    return core + extra + [T[lang]["er_text"]]
-
-# ===== Клавиатуры (вкл. главное меню, подменю, чипы) =====
-def inline_numbers_0_10() -> InlineKeyboardMarkup:
-    rows = []
-    row1 = [InlineKeyboardButton(str(n), callback_data=f"num|{n}") for n in range(0, 6)]
-    row2 = [InlineKeyboardButton(str(n), callback_data=f"num|{n}") for n in range(6, 11)]
-    rows.append(row1); rows.append(row2); rows.append([InlineKeyboardButton("◀", callback_data="pain|exit")])
-    return InlineKeyboardMarkup(rows)
-
-def inline_list(options: List[str], prefix: str) -> InlineKeyboardMarkup:
-    rows, row = [], []
-    for opt in options:
-        row.append(InlineKeyboardButton(opt, callback_data=f"{prefix}|{opt}"))
-        if len(row) == 3:
-            rows.append(row); row = []
-    if row: rows.append(row)
-    return InlineKeyboardMarkup(rows)
-
-def inline_topic_kb(lang: str) -> InlineKeyboardMarkup:
-    label = {"ru":"🧩 Опрос 6 пунктов","uk":"🧩 Опитник (6)","en":"🧩 Intake (6 Qs)","es":"🧩 Intake (6)"}[lang]
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🩺 Pain", callback_data="topic|pain"),
-         InlineKeyboardButton("😴 Sleep", callback_data="topic|sleep"),
-         InlineKeyboardButton("🍎 Nutrition", callback_data="topic|nutrition")],
-        [InlineKeyboardButton("🧪 Labs", callback_data="topic|labs"),
-         InlineKeyboardButton("🔁 Habits", callback_data="topic|habits"),
-         InlineKeyboardButton("🧬 Longevity", callback_data="topic|longevity")],
-        [InlineKeyboardButton("👤 Profile", callback_data="topic|profile")],
-        [InlineKeyboardButton(label, callback_data="intake:start")]
-    ])
-
-def inline_accept(lang: str) -> InlineKeyboardMarkup:
-    labels = T[lang]["accept_opts"]
-    return InlineKeyboardMarkup([[InlineKeyboardButton(labels[0], callback_data="acc|yes"),
-                                  InlineKeyboardButton(labels[1], callback_data="acc|later"),
-                                  InlineKeyboardButton(labels[2], callback_data="acc|no")]])
-
-def inline_remind(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏰ +4h" if lang=="en" else T[lang]["act_rem_4h"], callback_data="rem|4h"),
-         InlineKeyboardButton("⏰ This evening" if lang=="en" else T[lang]["act_rem_eve"], callback_data="rem|evening"),
-         InlineKeyboardButton("⏰ Tomorrow morning" if lang=="en" else T[lang]["act_rem_morn"], callback_data="rem|morning")]
-    ])
-
-def inline_feedback_kb(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(T[lang]["fb_good"], callback_data="fb|up"),
-         InlineKeyboardButton(T[lang]["fb_bad"], callback_data="fb|down")],
-        [InlineKeyboardButton(T[lang]["fb_free"], callback_data="fb|text")]
-    ])
-
-def inline_actions(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏰ +4h" if lang=="en" else T[lang]["act_rem_4h"], callback_data="act|rem|4h"),
-         InlineKeyboardButton("⏰ This evening" if lang=="en" else T[lang]["act_rem_eve"], callback_data="act|rem|evening"),
-         InlineKeyboardButton("⏰ Tomorrow morning" if lang=="en" else T[lang]["act_rem_morn"], callback_data="act|rem|morning")],
-        [InlineKeyboardButton(T[lang]["h60_btn"], callback_data="act|h60")],
-        [InlineKeyboardButton(T[lang]["act_ex_neck"], callback_data="act|ex|neck")],
-        [InlineKeyboardButton(T[lang]["act_find_lab"], callback_data="act|lab")],
-        [InlineKeyboardButton(T[lang]["act_er"], callback_data="act|er")]
-    ])
-
-# === NEW: Main menu & submenus ===
-def inline_main_menu(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(T[lang]["m_h60"], callback_data="menu|h60")],
-        [InlineKeyboardButton(T[lang]["m_sym"], callback_data="menu|sym")],
-        [InlineKeyboardButton(T[lang]["m_mini"], callback_data="menu|mini")],
-        [InlineKeyboardButton(T[lang]["m_care"], callback_data="menu|care")],
-        [InlineKeyboardButton(T[lang]["m_hab"], callback_data="menu|hab")],
-        [InlineKeyboardButton(T[lang]["m_rem"], callback_data="menu|rem")],
-        [InlineKeyboardButton(T[lang]["m_lang"], callback_data="menu|lang")],
-        [InlineKeyboardButton(T[lang]["m_privacy"], callback_data="menu|privacy")],
-        [InlineKeyboardButton(T[lang]["m_smart"], callback_data="menu|smart")],
-        [InlineKeyboardButton(T[lang]["m_soon"], callback_data="menu|coming")]
-    ])
-
-def inline_symptoms_menu(lang: str) -> InlineKeyboardMarkup:
-    labels = {"en":["Headache","Heartburn","Fatigue","Other"],
-              "ru":["Головная боль","Изжога","Усталость","Другое"],
-              "uk":["Головний біль","Печія","Втома","Інше"],
-              "es":["Dolor de cabeza","Acidez","Fatiga","Otro"]}[lang]
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(labels[0], callback_data="sym|headache"),
-         InlineKeyboardButton(labels[1], callback_data="sym|heartburn")],
-        [InlineKeyboardButton(labels[2], callback_data="sym|fatigue"),
-         InlineKeyboardButton(labels[3], callback_data="sym|other")],
-        [InlineKeyboardButton(T[lang]["back"], callback_data="menu|root")]
-    ])
-
-def inline_miniplans_menu(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Neck pain 5-min" if lang=="en" else "Шея 5 мин", callback_data="mini|neck")],
-        [InlineKeyboardButton("Sleep reset (3 nights)" if lang=="en" else "Сон-ресет (3 ночи)", callback_data="mini|sleepreset")],
-        [InlineKeyboardButton("Heartburn: 3 steps" if lang=="en" else "Изжога: 3 шага", callback_data="mini|heartburn")],
-        [InlineKeyboardButton("Hydration on hot days" if lang=="en" else "Гидратация в жару", callback_data="mini|hydration")],
-        [InlineKeyboardButton(T[lang]["back"], callback_data="menu|root")]
-    ])
-
-def inline_findcare_menu(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Labs near me" if lang=="en" else "Лабы рядом", callback_data="care|labsnear")],
-        [InlineKeyboardButton("Urgent care" if lang=="en" else "Неотложка", callback_data="care|urgent")],
-        [InlineKeyboardButton("Free clinics (NJ)" if lang=="en" else "Бесплатные клиники (NJ)", callback_data="care|free_nj")],
-        [InlineKeyboardButton(T[lang]["back"], callback_data="menu|root")]
-    ])
-
-def inline_habits_menu(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💧 Water", callback_data="hab|water"),
-         InlineKeyboardButton("🚶 Steps", callback_data="hab|steps")],
-        [InlineKeyboardButton("😴 Sleep", callback_data="hab|sleep"),
-         InlineKeyboardButton("🧠 Stress", callback_data="hab|stress")],
-        [InlineKeyboardButton("⚖️ Weight", callback_data="hab|weight")],
-        [InlineKeyboardButton(T[lang]["back"], callback_data="menu|root")]
-    ])
-
-def inline_lang_menu(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("EN", callback_data="lang|en"),
-         InlineKeyboardButton("RU", callback_data="lang|ru"),
-         InlineKeyboardButton("UK", callback_data="lang|uk"),
-         InlineKeyboardButton("ES", callback_data="lang|es")],
-        [InlineKeyboardButton(T[lang]["back"], callback_data="menu|root")]
-    ])
-
-def inline_smart_checkin(lang: str) -> InlineKeyboardMarkup:
-    lab = {"en":["I’m OK","Pain","Tired","Stressed","Heartburn","Other"],
-           "ru":["Я ок","Боль","Устал","Стресс","Изжога","Другое"],
-           "uk":["Все ок","Біль","Втома","Стрес","Печія","Інше"],
-           "es":["Estoy bien","Dolor","Cansado","Estrés","Acidez","Otro"]}[lang]
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(lab[0], callback_data="smart|ok"),
-         InlineKeyboardButton(lab[1], callback_data="smart|pain")],
-        [InlineKeyboardButton(lab[2], callback_data="smart|tired"),
-         InlineKeyboardButton(lab[3], callback_data="smart|stress")],
-        [InlineKeyboardButton(lab[4], callback_data="smart|hb"),
-         InlineKeyboardButton(lab[5], callback_data="smart|other")],
-        [InlineKeyboardButton(T[lang]["back"], callback_data="menu|root")]
-    ])
-
-# ===== Контекстные чипы =====
-def chips_for_text(text: str, lang: str) -> Optional[InlineKeyboardMarkup]:
-    low = (text or "").lower()
-    hb_kw = any(k in low for k in ["heartburn","burning after meals","изжог","жжёт","жжет","печія","кислота"])
-    neck_kw = any(k in low for k in ["neck pain","neck","шея","затылок","ший"])
-    if hb_kw:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("Avoid triggers" if lang=="en" else "Избегать триггеры", callback_data="chip|hb|triggers")],
-            [InlineKeyboardButton("OTC options", callback_data="chip|hb|otc")],
-            [InlineKeyboardButton("When to see a doctor" if lang=="en" else "Когда к врачу", callback_data="chip|hb|red")]
-        ])
-    if neck_kw:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("5-min routine", callback_data="chip|neck|routine")],
-            [InlineKeyboardButton("Heat/Ice tips" if lang=="en" else "Тепло/лёд", callback_data="chip|neck|heat")],
-            [InlineKeyboardButton("Red flags", callback_data="chip|neck|red")]
-        ])
-    return None
-
-# ===== Micro-plans =====
-def microplan_text(key: str, lang: str) -> str:
-    if key=="neck":
-        return {"ru":"Шея 5 мин:\n1) Медленные наклоны вперёд/назад ×5\n2) Повороты в стороны ×5\n3) Полукруги подбородком ×5\n4) Растяжка трапеций 2×20с.",
-                "uk":"Шия 5 хв:\n1) Нахили вперед/назад ×5\n2) Повороти в сторони ×5\n3) Півкола підборіддям ×5\n4) Розтяжка трапецій 2×20с.",
-                "en":"Neck 5-min:\n1) Slow flex/extend ×5\n2) Rotations L/R ×5\n3) Chin semicircles ×5\n4) Upper-trap stretch 2×20s.",
-                "es":"Cuello 5 min:\n1) Flex/ext lenta ×5\n2) Giros izq/der ×5\n3) Semicírculos con barbilla ×5\n4) Estiramiento trapecio sup. 2×20s."}[lang]
-    if key=="sleepreset":
-        return {"ru":"Сон-ресет (3 ночи):\nН1: экран-детокс 60м + отбой фикс.\nН2: 15м вне кровати при пробуждениях.\nН3: свет утром 10–15м, кофе до 14:00.",
-                "uk":"Сон-ресет (3 ночі):\nН1: детокс екранів 60 хв + фіксований відбій.\nН2: 15 хв поза ліжком при пробудженнях.\nН3: світло вранці 10–15 хв, кава до 14:00.",
-                "en":"Sleep reset (3 nights):\nN1: 60-min screen detox + fixed bedtime.\nN2: 15-min out of bed if awake.\nN3: AM light 10–15m; caffeine by 2pm.",
-                "es":"Reinicio del sueño (3 noches):\nN1: 60 min sin pantallas + hora fija.\nN2: 15 min fuera de la cama si despiertas.\nN3: Luz AM 10–15m; café hasta 14:00."}[lang]
-    if key=="heartburn":
-        return {"ru":"Изжога — 3 шага:\n1) Порции меньше, не ложиться 3ч после еды.\n2) Триггеры: жирное, алкоголь, мята, шоколад, кофе — убрать.\n3) OTC: антацид по инструкции 2–3 дня.",
-                "uk":"Печія — 3 кроки:\n1) Менші порції, не лягати 3 год після їжі.\n2) Тригери: жирне, алкоголь, м’ята, шоколад, кава — прибрати.\n3) OTC: антацид за інстр. 2–3 дні.",
-                "en":"Heartburn — 3 steps:\n1) Smaller meals; avoid lying 3h after.\n2) Remove triggers: fatty foods, alcohol, mint, chocolate, coffee.\n3) OTC antacid 2–3 days as directed.",
-                "es":"Acidez — 3 pasos:\n1) Comidas pequeñas; no recostarse 3h.\n2) Evitar: grasas, alcohol, menta, chocolate, café.\n3) Antiácido OTC 2–3 días según etiqueta."}[lang]
-    if key=="hydration":
-        return {"ru":"Гидратация в жару:\nВода 200–300 мл каждый час активности; соль/электролиты при длительной жаре; светлая одежда и тень.",
-                "uk":"Гідратація в спеку:\nВода 200–300 мл щогодини активності; електроліти за тривалої спеки; світлий одяг і тінь.",
-                "en":"Hot-day hydration:\n200–300 ml water each active hour; add electrolytes if prolonged heat; light clothing & shade.",
-                "es":"Hidratación en calor:\n200–300 ml de agua por hora activa; electrolitos si el calor es prolongado; ropa clara y sombra."}[lang]
-    return ""
-
-# ===== Chips text =====
-def chip_text(domain: str, kind: str, lang: str) -> str:
-    if domain=="hb":
-        if kind=="triggers":
-            return {"ru":"Изжога — триггеры: жирное, острое, шоколад, кофе, цитрусы, мята, алкоголь. Последний приём пищи за 3 ч до сна.",
-                    "uk":"Печія — тригери: жирне, гостре, шоколад, кава, цитрусові, м’ята, алкоголь. Останній прийом за 3 год до сну.",
-                    "en":"Heartburn triggers: fatty/spicy foods, chocolate, coffee, citrus, mint, alcohol. Last meal ≥3h before bed.",
-                    "es":"Desencadenantes: grasa/picante, chocolate, café, cítricos, menta, alcohol. Última comida ≥3h antes de dormir."}[lang]
-        if kind=="otc":
-            return {"ru":"OTC варианты при изжоге: антацид (альгиновая кислота/карбонаты), кратко 2–3 дня. Если часто повторяется — обсудить с врачом.",
-                    "uk":"OTC варіанти: антацид (альгінати/карбонати) на 2–3 дні. Якщо часто — до лікаря.",
-                    "en":"OTC: antacid (alginates/carbonates) for 2–3 days. If frequent — discuss with a clinician.",
-                    "es":"OTC: antiácido (alginatos/carbonatos) 2–3 días. Si es frecuente, consulta médica."}[lang]
-        if kind=="red":
-            return {"ru":"Когда к врачу при изжоге: дисфагия, рвота кровью, чёрный стул, потеря веса, ночные боли, >2–3 нед несмотря на меры.",
-                    "uk":"Коли до лікаря: дисфагія, блювання кровʼю, чорний стілець, втрата ваги, нічний біль, >2–3 тиж попри заходи.",
-                    "en":"See a doctor if: trouble swallowing, vomiting blood, black stools, weight loss, nocturnal pain, >2–3 weeks despite measures.",
-                    "es":"Acude al médico si: disfagia, vómito con sangre, heces negras, pérdida de peso, dolor nocturno, >2–3 semanas pese a medidas."}[lang]
-    if domain=="neck":
-        if kind=="routine": return microplan_text("neck", lang)
-        if kind=="heat":
-            return {"ru":"Шея: первые 48 ч лучше холод 10–15 мин ×2–3/д; затем тепло для расслабления; лёгкая растяжка без боли.",
-                    "uk":"Шия: перші 48 год — холод 10–15 хв ×2–3/д; далі тепло; легка розтяжка без болю.",
-                    "en":"Neck: first 48h prefer ice 10–15 min ×2–3/day, then heat for relaxation; gentle stretch without pain.",
-                    "es":"Cuello: primeras 48h hielo 10–15 min ×2–3/día, luego calor; estiramientos suaves sin dolor."}[lang]
-        if kind=="red":
-            return {"ru":"Красные флаги: слабость рук, онемение, травма, лихорадка, боль >7/10, быстро прогрессирует — к врачу/неотложке.",
-                    "uk":"Червоні прапори: слабкість рук, оніміння, травма, гарячка, біль >7/10, прогресує — до лікаря/невідкладної.",
-                    "en":"Red flags: arm weakness/numbness, trauma, fever, pain >7/10, rapid progression — seek care.",
-                    "es":"Banderas rojas: debilidad/entumecimiento en brazos, trauma, fiebre, dolor >7/10, progresión rápida — atención médica."}[lang]
-    return ""
-
-# ===== Find care links =====
-def care_links(kind: str, lang: str, city_hint: Optional[str]=None) -> str:
-    if kind=="labsnear":
-        q = "labs near me" if lang=="en" else "лаборатории рядом"
-        return f"🔗 Google Maps: https://www.google.com/maps/search/{q.replace(' ','+')}"
-    if kind=="urgent":
-        q = "urgent care near me" if lang=="en" else "неотложка рядом"
-        return f"🔗 Google Maps: https://www.google.com/maps/search/{q.replace(' ','+')}"
-    if kind=="free_nj":
-        return "🔗 Free clinics NJ: https://www.google.com/maps/search/free+clinic+New+Jersey"
-    return ""
-
-# ===== Youth-пакет: команды =====
-async def cmd_energy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    tips = {
-        "en": [
-            "1) 10-min brisk walk now (raise pulse).",
-            "2) 300–500 ml water + light protein.",
-            "3) 20-min screen detox to refresh focus."
-        ],
-        "ru": [
-            "1) Быстрая ходьба 10 мин (пульс чуть выше обычного).",
-            "2) 300–500 мл воды + лёгкий белок.",
-            "3) 20 мин без экрана — разгрузка внимания."
-        ],
-        "uk": [
-            "1) Швидка ходьба 10 хв (пульс трохи вище).",
-            "2) 300–500 мл води + легкий білок.",
-            "3) 20 хв без екрана — перезавантаження уваги."
-        ],
-        "es": [
-            "1) Camina rápido 10 min.",
-            "2) 300–500 ml de agua + proteína ligera.",
-            "3) 20 min sin pantallas."
-        ]
-    }[lang]
-    await update.message.reply_text(T[lang]["energy_title"] + "\n" + "\n".join(tips), reply_markup=inline_actions(lang))
-
-async def cmd_water(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ +4h" if lang=="en" else T[lang]["act_rem_4h"], callback_data="act|rem|4h")]])
-    await update.message.reply_text(T[lang]["water_prompt"], reply_markup=kb)
-
-async def cmd_mood(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(T[lang]["mood_good"], callback_data="mood|good"),
-         InlineKeyboardButton(T[lang]["mood_ok"], callback_data="mood|ok"),
-         InlineKeyboardButton(T[lang]["mood_bad"], callback_data="mood|bad")],
-        [InlineKeyboardButton(T[lang]["mood_note"], callback_data="mood|note")]
-    ])
-    await update.message.reply_text(T[lang]["daily_gm"], reply_markup=kb)
-
-async def cmd_skin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    tip = {
-        "ru":"Умывание 2×/день тёплой водой, SPF утром, 1% ниацинамид вечером.",
-        "en":"Wash face 2×/day with lukewarm water, SPF in the morning, 1% niacinamide at night.",
-        "uk":"Вмивання 2×/день теплою водою, SPF вранці, 1% ніацинамід ввечері.",
-        "es":"Lava el rostro 2×/día con agua tibia, SPF por la mañana, 1% niacinamida por la noche."
-    }[lang]
-    await update.message.reply_text(T[lang]["skin_title"] + "\n" + tip, reply_markup=inline_actions(lang))
-
-# ===== Pain triage вспомогательные =====
-def _kb_for_code(lang: str, code: str):
-    if code == "painloc":
-        kb = inline_list(T[lang]["triage_pain_q1_opts"], "painloc")
-    elif code == "painkind":
-        kb = inline_list(T[lang]["triage_pain_q2_opts"], "painkind")
-    elif code == "paindur":
-        kb = inline_list(T[lang]["triage_pain_q3_opts"], "paindur")
-    elif code == "num":
-        kb = inline_numbers_0_10()
-    elif code == "painrf":
-        kb = inline_list(T[lang]["triage_pain_q5_opts"], "painrf")
-    else:
-        kb = None
-    if kb:
-        rows = kb.inline_keyboard + [[InlineKeyboardButton(T[lang]["back"], callback_data="pain|exit")]]
-        return InlineKeyboardMarkup(rows)
-    return None
-
-# ====== Health60 =====
-async def cmd_health60(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None))
-    sessions.setdefault(uid, {})["awaiting_h60"] = True
-    await update.message.reply_text(T[lang]["h60_intro"])
-
-# ===== /intake кнопка =====
-async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None) or "en")
-    txt = {"ru":"🧩 PRO-опрос: 6 ключевых вопросов. Готовы начать?",
-           "uk":"🧩 PRO-опитник: 6 ключових питань. Починаємо?",
-           "en":"🧩 PRO intake: 6 quick questions. Ready?",
-           "es":"🧩 PRO intake: 6 quick questions. Ready?"}[lang]
-    start_label = {"ru":"▶️ Начать","uk":"▶️ Почати","en":"▶️ Start","es":"▶️ Start"}[lang]
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(start_label, callback_data="intake:start")]])
-    await update.message.reply_text(txt, reply_markup=kb)
-
-# ===== Profile (10 шагов) =====
-PROFILE_STEPS = [
-    {"key":"sex","opts":{"ru":[("Мужчина","male"),("Женщина","female"),("Другое","other")],
-                         "en":[("Male","male"),("Female","female"),("Other","other")],
-                         "uk":[("Чоловіча","male"),("Жіноча","female"),("Інша","other")],
-                         "es":[("Hombre","male"),("Mujer","female"),("Otro","other")]}},
-    {"key":"age","opts":{"ru":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
-                         "en":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
-                         "uk":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")],
-                         "es":[("18–25","22"),("26–35","30"),("36–45","40"),("46–60","50"),("60+","65")]}},
-    {"key":"height_cm","opts":{"ru":[("160","160"),("170","170"),("180","180")],
-                               "en":[("160","160"),("170","170"),("180","180")],
-                               "uk":[("160","160"),("170","170"),("180","180")],
-                               "es":[("160","160"),("170","170"),("180","180")]}},
-    {"key":"weight_kg","opts":{"ru":[("60","60"),("75","75"),("90","90")],
-                               "en":[("60","60"),("75","75"),("90","90")],
-                               "uk":[("60","60"),("75","75"),("90","90")],
-                               "es":[("60","60"),("75","75"),("90","90")]}},
-    {"key":"goal","opts":{"ru":[("Похудение","weight"),("Энергия","energy"),("Сон","sleep"),("Долголетие","longevity"),("Сила","strength")],
-                          "en":[("Weight","weight"),("Energy","energy"),("Sleep","sleep"),("Longevity","longevity"),("Strength","strength")],
-                          "uk":[("Вага","weight"),("Енергія","energy"),("Сон","sleep"),("Довголіття","longevity"),("Сила","strength")],
-                          "es":[("Peso","weight"),("Energía","energy"),("Sueño","sleep"),("Longevidad","longevity"),("Fuerza","strength")]}},
-    {"key":"conditions","opts":{"ru":[("Нет","none"),("Гипертония","hypertension"),("Диабет","diabetes"),("Щитовидка","thyroid"),("Другое","other")],
-                                "en":[("None","none"),("Hypertension","hypertension"),("Diabetes","diabetes"),("Thyroid","thyroid"),("Other","other")],
-                                "uk":[("Немає","none"),("Гіпертонія","hypertension"),("Діабет","diabetes"),("Щитоподібна","thyroid"),("Інше","other")],
-                                "es":[("Ninguna","none"),("Hipertensión","hypertension"),("Diabetes","diabetes"),("Tiroides","thyroid"),("Otra","other")]}},
-    {"key":"meds","opts":{"ru":[("Нет","none"),("Магний","magnesium"),("Витамин D","vitd"),("Аллергии есть","allergies"),("Другое","other")],
-                          "en":[("None","none"),("Magnesium","magnesium"),("Vitamin D","vitd"),("Allergies","allergies"),("Other","other")],
-                          "uk":[("Немає","none"),("Магній","magnesium"),("Вітамін D","vitd"),("Алергії","allergies"),("Інше","other")],
-                          "es":[("Ninguno","none"),("Magnesio","magnesium"),("Vitamina D","vitd"),("Alergias","allergies"),("Otro","other")]}},
-    {"key":"supplements","opts":{"ru":[("Нет","none"),("Омега-3","omega3"),("Креатин","creatine"),("Протеин","protein"),("Другое","other")],
-                                 "en":[("None","none"),("Omega-3","omega3"),("Creatine","creatine"),("Protein","protein"),("Other","other")],
-                                 "uk":[("Немає","none"),("Омега-3","omega3"),("Креатин","creatine"),("Протеїн","protein"),("Інше","other")],
-                                 "es":[("Ninguno","none"),("Omega-3","omega3"),("Creatina","creatine"),("Proteína","protein"),("Otro","other")]}},
-    {"key":"sleep","opts":{"ru":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
-                           "en":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")],
-                           "uk":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Нерегулярно","irregular")],
-                           "es":[("23:00/07:00","23:00/07:00"),("00:00/08:00","00:00/08:00"),("Irregular","irregular")]}},
-    {"key":"activity","opts":{"ru":[("<5к шагов","<5k"),("5–8к","5-8k"),("8–12к","8-12k"),("Спорт регулярно","sport")],
-                              "en":[("<5k steps","<5k"),("5–8k","5-8k"),("8–12k","8-12k"),("Regular sport","sport")],
-                              "uk":[("<5к кроків","<5k"),("5–8к","5-8k"),("8–12к","8-12k"),("Спорт регулярно","sport")],
-                              "es":[("<5k pasos","<5k"),("5–8k","5-8k"),("8–12k","8-12k"),("Deporte regular","sport")]}}
-]
-
-def build_profile_kb(lang:str, key:str, opts:List[Tuple[str,str]])->InlineKeyboardMarkup:
-    rows=[]; row=[]
-    for label,val in opts:
-        row.append(InlineKeyboardButton(label, callback_data=f"p|choose|{key}|{val}"))
-        if len(row)==3:
-            rows.append(row); row=[]
-    if row: rows.append(row)
-    rows.append([InlineKeyboardButton(T[lang]["write"], callback_data=f"p|write|{key}"),
-                 InlineKeyboardButton(T[lang]["skip"], callback_data=f"p|skip|{key}")])
-    return InlineKeyboardMarkup(rows)
-
-async def start_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
-    sessions[uid] = {"profile_active": True, "p_step": 0, "p_wait_key": None}
-    await context.bot.send_message(chat_id, T[lang]["profile_intro"], reply_markup=ReplyKeyboardRemove())
-    step = PROFILE_STEPS[0]
-    kb = build_profile_kb(lang, step["key"], step["opts"][lang])
-    await context.bot.send_message(chat_id, T[lang]["p_step_1"], reply_markup=kb)
-
-async def advance_profile_ctx(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, uid: int):
-    s = sessions.get(uid, {})
-    s["p_step"] += 1
-    if s["p_step"] < len(PROFILE_STEPS):
-        idx = s["p_step"]; step = PROFILE_STEPS[idx]
-        kb = build_profile_kb(lang, step["key"], step["opts"][lang])
-        key_to_idx = {"sex":1,"age":2,"height_cm":3,"weight_kg":4,"goal":5,"conditions":6,"meds":7,"supplements":8,"sleep":9,"activity":10}
-        num = key_to_idx.get(step["key"], idx+1)
-        await context.bot.send_message(chat_id, T[lang][f"p_step_{num}"], reply_markup=kb)
-        return
-    # финал
-    prof = profiles_get(uid); summary=[]
-    for k in ["sex","age","height_cm","weight_kg","goal","conditions","meds","supplements","sleep","activity","diet"]:
-        v = prof.get(k) or sessions.get(uid,{}).get(k,"")
-        if v: summary.append(f"{k}: {v}")
-    profiles_upsert(uid, {})
-    sessions[uid]["profile_active"] = False
-    users_set(uid, "profile_banner_shown", "no")
-    await context.bot.send_message(chat_id, T[lang]["saved_profile"] + "; ".join(summary))
-    await context.bot.send_message(chat_id, T[lang]["start_where"], reply_markup=inline_topic_kb(lang))
-
-# ===== РЕНДЕР ГЛАВНОГО МЕНЮ =====
-async def render_main_menu(update_or_cb: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update_or_cb.callback_query:
-        chat_id = update_or_cb.callback_query.message.chat.id
-        uid = update_or_cb.callback_query.from_user.id
-    else:
-        chat_id = update_or_cb.effective_chat.id
-        uid = update_or_cb.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or getattr(update_or_cb.effective_user, "language_code", None) or "en")
-    await context.bot.send_message(chat_id, f"{T[lang]['m_menu_title']}", reply_markup=inline_main_menu(lang))
-
-# ===== Основной текстовый обработчик =====
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user; uid = user.id
-    text = (update.message.text or "").strip()
-    logging.info(f"INCOMING uid={uid} text={text[:200]}")
-
-    urec = users_get(uid)
-    # новый пользователь: сохраняем, приветствие, меню, согласие и GATE (опрос)
-    if not urec:
-        lang_guess = detect_lang_from_text(text, norm_lang(getattr(user, "language_code", None)))
-        users_upsert(uid, user.username or "", lang_guess)
-        sessions.setdefault(uid, {})["last_user_text"] = text
-        await update.message.reply_text(T[lang_guess]["welcome"], reply_markup=ReplyKeyboardRemove())
-        # NEW: сразу главное меню
-        await update.message.reply_text(T[lang_guess]["m_menu_title"], reply_markup=inline_main_menu(lang_guess))
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang_guess]["yes"], callback_data="consent|yes"),
-                                    InlineKeyboardButton(T[lang_guess]["no"], callback_data="consent|no")]])
-        await update.message.reply_text(T[lang_guess]["ask_consent"], reply_markup=kb)
-        if _has_jq_ctx(context):
-            schedule_daily_checkin(context.application, uid, 0, DEFAULT_CHECKIN_LOCAL, lang_guess)
-            schedule_morning_evening(context.application, uid, 0, lang_guess)
-        context.user_data["lang"] = lang_guess
-        await gate_show(update, context)
-        return
-
-    saved_lang = norm_lang(urec.get("lang") or getattr(user,"language_code",None))
-    detected_lang = detect_lang_from_text(text, saved_lang)
-    if detected_lang != saved_lang:
-        users_set(uid,"lang",detected_lang)
-    lang = detected_lang
-    sessions.setdefault(uid, {})["last_user_text"] = text
-
-    sc = detect_serious(text)
-    if sc:
-        sessions.setdefault(uid,{})["mode"] = "serious"
-        sessions[uid]["serious_condition"] = sc
-        prof = profiles_get(uid)
-        plan = pain_plan(lang, [], prof)
-        await update.message.reply_text("\n".join(plan), reply_markup=inline_actions(lang))
-        ask_feedback_soft(uid, context, lang)
-        return
-
-    if sessions.get(uid, {}).get("awaiting_daily_comment"):
-        daily_add(iso(utcnow()), uid, "note", text)
-        sessions[uid]["awaiting_daily_comment"] = False
-        await update.message.reply_text(T[lang]["mood_thanks"]); return
-
-    if sessions.get(uid, {}).get("awaiting_free_feedback"):
-        sessions[uid]["awaiting_free_feedback"] = False
-        feedback_add(iso(utcnow()), uid, "free", user.username, "", text)
-        await update.message.reply_text(T[lang]["fb_thanks"]); return
-
-    if sessions.get(uid, {}).get("awaiting_city"):
-        sessions[uid]["awaiting_city"] = False
-        await update.message.reply_text(T[lang]["thanks"]); return
-
-    # HABITS: ожидание веса
-    if sessions.get(uid, {}).get("awaiting_weight"):
-        m = re.search(r'\d{1,3}(?:[.,]\d{1,1})?', text.replace(",", "."))
-        sessions[uid]["awaiting_weight"] = False
-        if m:
-            val = m.group(0)
-            st = habits_add(uid, "weight", val, "kg")
-            await update.message.reply_text(("Logged weight: " if lang=="en" else "Вес записан: ") + f"{val} kg\nStreak: {st}", reply_markup=inline_main_menu(lang))
-        else:
-            await update.message.reply_text("Please send a number like 72.5" if lang=="en" else "Пришлите число, например 72.5", reply_markup=inline_main_menu(lang))
-        return
-
-    if sessions.get(uid, {}).get("awaiting_h60"):
-        sessions[uid]["awaiting_h60"] = False
-        prof = profiles_get(uid)
-        low = text.lower()
-        if any(word in low for word in ["белок","protein","больше белка","↑белок"]):
-            if lang=="ru":
-                msg = "Под тебя подойдёт сегодня:\n• Творог 200 г + огурец\n• Омлет 2 яйца + овощи\n• Сардины 1 банка + салат\nВыбери вариант — подстрою дальше."
-            elif lang=="uk":
-                msg = "На сьогодні підійде:\n• Сир 200 г + огірок\n• Омлет 2 яйця + овочі\n• Сардини 1 банка + салат\nОбери варіант — підлаштую далі."
-            else:
-                msg = "Good picks for today:\n• Cottage cheese 200 g + cucumber\n• 2-egg omelet + veggies\n• Sardines (1 can) + salad\nPick one — I’ll tailor next."
-            await update.message.reply_text(msg, reply_markup=inline_actions(lang))
-        else:
-            await update.message.reply_text(T[lang]["unknown"], reply_markup=inline_actions(lang))
-        # Показ чипов по контексту
-        chips = chips_for_text(text, lang)
-        if chips:
-            await update.message.reply_text(T[lang]["chips_hb"] if "hb" in str(chips.inline_keyboard[0][0].callback_data) else T[lang]["chips_neck"], reply_markup=chips)
-        ask_feedback_soft(uid, context, lang)
-        return
-
-    if sessions.get(uid, {}).get("p_wait_key"):
-        key = sessions[uid]["p_wait_key"]; sessions[uid]["p_wait_key"] = None
-        val = text
-        if key in {"age","height_cm","weight_kg"}:
-            m = re.search(r'\d{1,3}', text)
-            if m: val = m.group(0)
-        profiles_upsert(uid,{key:val}); sessions[uid][key]=val
-        users_set(uid, "profile_banner_shown", "no")
-        await advance_profile_ctx(context, update.effective_chat.id, lang, uid); return
-
-    s = sessions.get(uid, {})
-    if s.get("topic") == "pain":
-        if re.search(r"\b(stop|exit|back|назад|выход|выйти)\b", text.lower()):
-            sessions.pop(uid, None)
-            await update.message.reply_text(T[lang]["m_menu_title"], reply_markup=inline_main_menu(lang)); return
-        if s.get("step") == 1:
-            await send_unique(update.message, uid, T[lang]["triage_pain_q2"], reply_markup=_kb_for_code(lang, "painkind")); return
-        if s.get("step") == 2:
-            await send_unique(update.message, uid, T[lang]["triage_pain_q3"], reply_markup=_kb_for_code(lang, "paindur")); return
-        if s.get("step") == 3:
-            await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_code(lang, "num")); return
-        if s.get("step") == 4:
-            m = re.fullmatch(r"(?:10|[0-9])", text)
-            if m:
-                sev = int(m.group(0)); s.setdefault("answers", {})["severity"] = sev; s["step"] = 5
-                await update.message.reply_text(T[lang]["triage_pain_q5"], reply_markup=_kb_for_code(lang, "painrf")); return
-            await update.message.reply_text(T[lang]["triage_pain_q4"], reply_markup=_kb_for_code(lang, "num")); return
-
-    if should_show_profile_banner(uid):
-        prof = profiles_get(uid)
-        banner = profile_banner(lang, prof)
-        if banner.strip().strip("—"):
-            await update.message.reply_text(banner)
-        users_set(uid, "profile_banner_shown", "yes")
-
-    prof = profiles_get(uid)
-    data = llm_router_answer(text, lang, prof)
-    msg = apply_warm_tone(data.get("assistant_reply") or T[lang]["unknown"], lang)
-    await update.message.reply_text(msg, reply_markup=inline_actions(lang))
-    # Контекстные чипы
-    chips = chips_for_text(text, lang)
-    if chips:
-        await update.message.reply_text(T[lang]["chips_hb"] if "hb" in str(chips.inline_keyboard[0][0].callback_data) else T[lang]["chips_neck"], reply_markup=chips)
-    ask_feedback_soft(uid, context, lang)
-    for one in (data.get("followups") or [])[:2]:
-        await send_unique(update.message, uid, apply_warm_tone(one, lang), force=True)
-    return
-
-# ===== Callback handler (см. Часть 2) =====
-# on_callback будет определён во второй части файла.
-
-# ---------- Build & run ----------
-async def post_init(app):
-    me = await app.bot.get_me()
-    logging.info(f"BOT READY: @{me.username} (id={me.id})")
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = norm_lang(getattr(user, "language_code", None))
-    users_upsert(user.id, user.username or "", lang)
-    context.user_data["lang"] = lang
-    sessions.setdefault(user.id, {})["last_user_text"] = "/start"
-    await update.message.reply_text(T[lang]["welcome"], reply_markup=ReplyKeyboardRemove())
-    prof = profiles_get(user.id)
-    if prof and should_show_profile_banner(user.id):
-        await update.message.reply_text(profile_banner(lang, prof))
-        users_set(user.id, "profile_banner_shown", "yes")
-    # NEW: главное меню
-    await update.message.reply_text(T[lang]["m_menu_title"], reply_markup=inline_main_menu(lang))
-    if not profiles_get(user.id) and not context.user_data.get(GATE_FLAG_KEY):
-        await gate_show(update, context)
-    u = users_get(user.id)
-    if (u.get("consent") or "").lower() not in {"yes","no"}:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["yes"], callback_data="consent|yes"),
-                                    InlineKeyboardButton(T[lang]["no"], callback_data="consent|no")]])
-        await update.message.reply_text(T[lang]["ask_consent"], reply_markup=kb)
-    tz_off = int(str(u.get("tz_offset") or "0"))
-    hhmm = (u.get("checkin_hour") or DEFAULT_CHECKIN_LOCAL)
-    if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, user.id, tz_off, hhmm, lang)  # утро
-        schedule_morning_evening(context.application, user.id, tz_off, lang)     # вечер
-    else:
-        logging.warning("JobQueue not available on /start – daily check-ins not scheduled.")
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = norm_lang(users_get(update.effective_user.id).get("lang") or "en")
-    await update.message.reply_text(T[lang]["help"])
-
-async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = norm_lang(users_get(update.effective_user.id).get("lang") or "en")
-    await update.message.reply_text(T[lang]["privacy"])
-
-async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await render_main_menu(update, context)
-
-async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id; users_set(uid, "paused", "yes")
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    await update.message.reply_text(T[lang]["paused_on"])
-
-async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id; users_set(uid, "paused", "no")
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    await update.message.reply_text(T[lang]["paused_off"])
-
-# *** ОБНОВЛЁННЫЙ /delete_data: чистим все листы и снимаем джобы
-async def cmd_delete_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if SHEETS_ENABLED:
-        def _delete_where(ws, col_name, value):
-            vals = ws.get_all_values()
-            if not vals: return
-            hdr = vals[0]
-            try:
-                col = hdr.index(col_name) + 1
-            except ValueError:
-                return
-            rows = []
-            for i in range(2, len(vals) + 1):
-                try:
-                    if ws.cell(i, col).value == str(value):
-                        rows.append(i)
-                except Exception:
-                    continue
-            for i in reversed(rows):
-                ws.delete_rows(i)
-        _delete_where(ws_users, "user_id", uid)
-        _delete_where(ws_profiles, "user_id", uid)
-        _delete_where(ws_episodes, "user_id", uid)
-        _delete_where(ws_reminders,"user_id", uid)
-        _delete_where(ws_daily, "user_id", uid)
-        _delete_where(ws_feedback, "user_id", uid)
-        _delete_where(ws_habits, "user_id", uid)
-    else:
-        MEM_USERS.pop(uid, None)
-        MEM_PROFILES.pop(uid, None)
-        global MEM_EPISODES, MEM_REMINDERS, MEM_DAILY, MEM_FEEDBACK, MEM_HABITS
-        MEM_EPISODES = [r for r in MEM_EPISODES if r["user_id"] != str(uid)]
-        MEM_REMINDERS = [r for r in MEM_REMINDERS if r["user_id"] != str(uid)]
-        MEM_DAILY = [r for r in MEM_DAILY if r["user_id"] != str(uid)]
-        MEM_FEEDBACK = [r for r in MEM_FEEDBACK if r["user_id"] != str(uid)]
-        MEM_HABITS = [r for r in MEM_HABITS if r["user_id"] != str(uid)]
-    # снимаем расписанные ежедневные задачи
-    if _has_jq_ctx(context):
-        for name in [f"daily_{uid}", f"daily_e_{uid}"]:
-            for j in context.application.job_queue.get_jobs_by_name(name):
-                j.schedule_removal()
-    lang = norm_lang(getattr(update.effective_user,"language_code",None))
-    await update.message.reply_text(T[lang]["deleted"], reply_markup=ReplyKeyboardRemove())
-
-async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or getattr(update.effective_user, "language_code", None))
-    await start_profile_ctx(context, update.effective_chat.id, lang, uid)
-
-# *** ОБНОВЛЁННЫЙ /settz: клиппинг диапазона −12…+14
-async def cmd_settz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    parts = (update.message.text or "").split()
-    if len(parts)<2 or not re.fullmatch(r"[+-]?\d{1,2}", parts[1]):
-        await update.message.reply_text({"ru":"Формат: /settz +3","uk":"Формат: /settz +2",
-                                         "en":"Usage: /settz +3","es":"Uso: /settz +3"}[lang]); return
-    off = int(parts[1]); off = max(-12, min(14, off))  # клиппим смещение
-    users_set(uid, "tz_offset", str(off))
-    hhmm = users_get(uid).get("checkin_hour") or DEFAULT_CHECKIN_LOCAL
-    if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, uid, off, hhmm, lang)  # утро
-        schedule_morning_evening(context.application, uid, off, lang)      # вечер
-    await update.message.reply_text({"ru":f"Сдвиг часового пояса: {off}ч",
-                                     "uk":f"Зсув: {off} год",
-                                     "en":f"Timezone offset: {off}h",
-                                     "es":f"Desfase horario: {off}h"}[lang])
-
-async def cmd_checkin_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    parts = (update.message.text or "").split(maxsplit=1)
-    hhmm = DEFAULT_CHECKIN_LOCAL
-    if len(parts)==2:
-        m = re.search(r'([01]?\d|2[0-3]):([0-5]\d)', parts[1]); if m: hhmm = m.group(0)
-    users_set(uid,"checkin_hour",hhmm)
-    tz_off = int(str(users_get(uid).get("tz_offset") or "0"))
-    if _has_jq_ctx(context):
-        schedule_daily_checkin(context.application, uid, tz_off, hhmm, lang)  # утро
-        schedule_morning_evening(context.application, uid, tz_off, lang)      # вечер
-    else:
-        logging.warning("JobQueue not available – daily check-in not scheduled.")
-    await update.message.reply_text({"ru":f"Ежедневный чек-ин включён ({hhmm}).",
-                                     "uk":f"Щоденний чек-ін увімкнено ({hhmm}).",
-                                     "en":f"Daily check-in enabled ({hhmm}).",
-                                     "es":f"Check-in diario activado ({hhmm})."}[lang])
-
-async def cmd_checkin_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if _has_jq_ctx(context):
-        for name in [f"daily_{uid}", f"daily_e_{uid}"]:
-            for j in context.application.job_queue.get_jobs_by_name(name):
-                j.schedule_removal()
-    lang = norm_lang(users_get(uid).get("lang") or "en")
-    await update.message.reply_text({"ru":"Ежедневный чек-ин выключен.",
-                                     "uk":"Щоденний чек-ін вимкнено.",
-                                     "en":"Daily check-in disabled.",
-                                     "es":"Check-in diario desactivado."}[lang])
-
-def build_app() -> "Application":
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-    # безопасно подключаем PRO-опросник
-    try:
-        register_intake_pro(app, GSPREAD_CLIENT, on_complete_cb=_ipro_save_to_sheets_and_open_menu)
-        logging.info("Intake Pro registered.")
-    except Exception as e:
-        logging.warning(f"Intake Pro registration failed: {e}")
-
-    # Commands
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("privacy", cmd_privacy))
-    app.add_handler(CommandHandler("menu", cmd_menu))  # NEW
-    app.add_handler(CommandHandler("pause", cmd_pause))
-    app.add_handler(CommandHandler("resume", cmd_resume))
-    app.add_handler(CommandHandler("delete_data", cmd_delete_data))
-    app.add_handler(CommandHandler("profile", cmd_profile))
-    app.add_handler(CommandHandler("settz", cmd_settz))
-    app.add_handler(CommandHandler("checkin_on", cmd_checkin_on))
-    app.add_handler(CommandHandler("checkin_off", cmd_checkin_off))
-    app.add_handler(CommandHandler("health60", cmd_health60))
-    app.add_handler(CommandHandler("intake", cmd_intake))
-    # Youth
-    app.add_handler(CommandHandler("energy", cmd_energy))
-    app.add_handler(CommandHandler("mood", cmd_mood))
-    app.add_handler(CommandHandler("water", cmd_water))
-    app.add_handler(CommandHandler("skin", cmd_skin))
-    # Lang toggles
-    app.add_handler(CommandHandler("ru", lambda u,c: users_set(u.effective_user.id,"lang","ru") or u.message.reply_text("Ок, дальше отвечаю по-русски.")))
-    app.add_handler(CommandHandler("en", lambda u,c: users_set(u.effective_user.id,"lang","en") or u.message.reply_text("OK, I’ll reply in English.")))
-    app.add_handler(CommandHandler("uk", lambda u,c: users_set(u.effective_user.id,"lang","uk") or u.message.reply_text("Ок, надалі відповідатиму українською.")))
-    app.add_handler(CommandHandler("es", lambda u,c: users_set(u.effective_user.id,"lang","es") or u.message.reply_text("De acuerdo, responderé en español.")))
-
-    # Gate & callbacks
-    app.add_handler(CallbackQueryHandler(gate_cb, pattern=r"^gate:"))
-    # Основной callback-роутер будет добавлен ниже (после определения on_callback в Части 2)
-
-    # Text
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-
-    # проброс рендера меню для GATE
-    app.bot_data["render_menu_cb"] = render_main_menu
-    return app
-
-# ---------- Callback router & helpers ----------
-
-def _set_session(uid: int) -> dict:
-    return sessions.setdefault(uid, {})
-
-def _parse_cb(data: str) -> List[str]:
-    return (data or "").split("|")
-
-def _reply_cbsafe(q, text: str, kb=None):
-    try:
-        if kb:
-            return q.edit_message_text(text, reply_markup=kb)
-        return q.edit_message_text(text)
-    except Exception:
-        # если сообщение старое/не редактируется — просто отправим новое
-        return q.message.reply_text(text, reply_markup=kb)
-
-def _schedule_oneoff(context: ContextTypes.DEFAULT_TYPE, uid: int, when_utc: datetime, rid: str):
-    if _has_jq_ctx(context):
-        delay = max(60, (when_utc - utcnow()).total_seconds())
-        context.application.job_queue.run_once(
-            job_oneoff_reminder,
-            when=delay,
-            data={"user_id": uid, "reminder_id": rid},
-        )
-
-def _parse_eve_morn_to_utc(uid: int, when: str) -> datetime:
-    tz_off = int(str(users_get(uid).get("tz_offset") or "0"))
-    local_now = utcnow() + timedelta(hours=tz_off)
-    hhmm = "20:30" if when == "evening" else "08:30"
-    h, m = hhmm_tuple(hhmm)
-    base = local_now.date() + (timedelta(days=1) if when == "morning" else timedelta(days=0))
-    local_dt = datetime.combine(base, dtime(hour=h, minute=m)).replace(tzinfo=timezone.utc) - timedelta(hours=tz_off)
-    return local_dt
-
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    parts = _parse_cb(q.data)
-    uid = q.from_user.id
-    lang = norm_lang(users_get(uid).get("lang") or getattr(q.from_user, "language_code", None) or "en")
-    s = _set_session(uid)
-
-    # ----- consent -----
-    if parts[0] == "consent":
-        users_set(uid, "consent", "yes" if parts[1] == "yes" else "no")
-        await _reply_cbsafe(q, T[lang]["thanks"])
-        return
-
-    # ----- Gate -> Intake start -----
-    if parts[0] == "intake" and parts[1] == "start":
-        try:
-            await context.bot.send_message(q.message.chat_id, "✅ Начинаем PRO-опрос…")
-        except Exception as e:
-            logging.warning(f"Intake start cb err: {e}")
-        return
-
-    # ----- Profile 10 steps -----
-    if parts[0] == "p":
-        action = parts[1]
-        key = parts[2]
-        if action == "choose":
-            val = parts[3]
-            profiles_upsert(uid, {key: val})
-            s[key] = val
-            users_set(uid, "profile_banner_shown", "no")
-            await _reply_cbsafe(q, f"{T[lang]['saved_profile']}{key}: {val}")
-            await advance_profile_ctx(context, q.message.chat_id, lang, uid)
-            return
-        if action == "write":
-            s["p_wait_key"] = key
-            await _reply_cbsafe(q, T[lang]["write"])
-            return
-        if action == "skip":
-            await advance_profile_ctx(context, q.message.chat_id, lang, uid)
-            return
-
-    # ----- Main menu -----
-    if parts[0] == "menu":
-        dest = parts[1]
-        if dest == "root":
-            await _reply_cbsafe(q, T[lang]["m_menu_title"], inline_main_menu(lang))
-            return
-        if dest == "h60":
-            sessions[uid]["awaiting_h60"] = True
-            await _reply_cbsafe(q, T[lang]["h60_intro"])
-            return
-        if dest == "sym":
-            await _reply_cbsafe(q, "Выберите симптом:" if lang != "en" else "Pick a symptom:", inline_symptoms_menu(lang))
-            return
-        if dest == "mini":
-            await _reply_cbsafe(q, "Мини-планы:" if lang != "en" else "Mini-plans:", inline_miniplans_menu(lang))
-            return
-        if dest == "care":
-            await _reply_cbsafe(q, "Куда обратиться:" if lang != "en" else "Find care:", inline_findcare_menu(lang))
-            return
-        if dest == "hab":
-            await _reply_cbsafe(q, "Быстрый лог:" if lang != "en" else "Quick log:", inline_habits_menu(lang))
-            return
-        if dest == "rem":
-            await _reply_cbsafe(q, "Быстрые напоминания:" if lang != "en" else "Reminders:", inline_remind(lang))
-            return
-        if dest == "lang":
-            await _reply_cbsafe(q, "Язык / Language:", inline_lang_menu(lang))
-            return
-        if dest == "privacy":
-            await _reply_cbsafe(q, T[lang]["privacy"], InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["back"], callback_data="menu|root")]]))
-            return
-        if dest == "smart":
-            await _reply_cbsafe(q, "Как вы сейчас?" if lang != "en" else "How are you now?", inline_smart_checkin(lang))
-            return
-        if dest == "coming":
-            await _reply_cbsafe(q, T[lang]["m_soon"], InlineKeyboardMarkup([[InlineKeyboardButton(T[lang]["back"], callback_data="menu|root")]]))
-            return
-
-    # ----- Language switch -----
-    if parts[0] == "lang":
-        code = parts[1]
-        users_set(uid, "lang", code)
-        await _reply_cbsafe(q, "Готово." if code in ("ru", "uk", "es") else "Done.", inline_main_menu(code))
-        return
-
-    # ----- Symptoms quick -----
-    if parts[0] == "sym":
-        topic = parts[1]
-        if topic == "other":
-            await _reply_cbsafe(q, T[lang]["unknown"], inline_actions(lang))
-            return
-        if topic == "headache":
-            s["topic"] = "pain"; s["step"] = 1; s["answers"] = {"loc": "Head"}
-            await _reply_cbsafe(q, T[lang]["triage_pain_q2"], _kb_for_code(lang, "painkind"))
-            return
-        if topic == "heartburn":
-            await _reply_cbsafe(q, chip_text("hb", "triggers", lang) + "\n\n" + microplan_text("heartburn", lang), inline_actions(lang))
-            return
-        if topic == "fatigue":
-            await _reply_cbsafe(q, "Попробуйте 10-мин прогулку и воду 300–500 мл. Нужно подробней?"
-                                   if lang != "en" else
-                                   "Try a 10-min walk and 300–500 ml water. Want more?",
-                                   inline_actions(lang))
-            return
-
-    # ----- Topic pain from root -----
-    if parts[0] == "topic" and parts[1] == "pain":
-        s["topic"] = "pain"; s["step"] = 1; s["answers"] = {}
-        await _reply_cbsafe(q, T[lang]["triage_pain_q1"], _kb_for_code(lang, "painloc"))
-        return
-
-    # ----- Pain triage steps -----
-    if parts[0] in {"painloc", "painkind", "paindur", "painrf", "num", "pain"}:
-        if parts[0] == "pain" and parts[1] == "exit":
-            sessions.pop(uid, None)
-            await _reply_cbsafe(q, T[lang]["m_menu_title"], inline_main_menu(lang))
-            return
-
-        s.setdefault("answers", {})
-
-        if parts[0] == "painloc":
-            s["answers"]["loc"] = parts[1]
-            s["step"] = 2
-            await _reply_cbsafe(q, T[lang]["triage_pain_q2"], _kb_for_code(lang, "painkind"))
-            return
-
-        if parts[0] == "painkind":
-            s["answers"]["kind"] = parts[1]
-            s["step"] = 3
-            await _reply_cbsafe(q, T[lang]["triage_pain_q3"], _kb_for_code(lang, "paindur"))
-            return
-
-        if parts[0] == "paindur":
-            s["answers"]["dur"] = parts[1]
-            s["step"] = 4
-            await _reply_cbsafe(q, T[lang]["triage_pain_q4"], _kb_for_code(lang, "num"))
-            return
-
-        if parts[0] == "num":
-            try:
-                sev = int(parts[1]); s["answers"]["severity"] = sev; s["step"] = 5
-            except Exception:
-                s["step"] = 4
-                await _reply_cbsafe(q, T[lang]["triage_pain_q4"], _kb_for_code(lang, "num"))
-                return
-            await _reply_cbsafe(q, T[lang]["triage_pain_q5"], _kb_for_code(lang, "painrf"))
-            return
-
-        if parts[0] == "painrf":
-            s["answers"]["rf"] = parts[1]
-
-            # формируем план (без проблемного блока)
-            prof = profiles_get(uid)
-            plan = pain_plan(lang, [parts[1]], prof)
             header = T[lang]["plan_header"]
-            await _reply_cbsafe(
-                q,
-                header + "\n" + "\n".join(f"• {p}" for p in plan),
-                inline_accept(lang)
-            )
-
-            # создадим/обновим эпизод
-            sev = int(str(s["answers"].get("severity") or "5"))
-            eid = (episode_find_open(uid) or {}).get("episode_id")
-            if not eid:
-                eid = episode_create(uid, f"pain:{s['answers'].get('loc','?')}", sev, s['answers'].get('rf',''))
-                episode_set(eid, "plan_accepted", "0")
-            s["episode_id"] = eid
+            plan_text = header + "\n" + "\n".join(plan)
+            await _reply_cbsafe(q, plan_text, inline_accept(lang))
             return
 
-    # ----- Accept plan (после painrf) -----
+    # ----- Принятие плана и назначение чек-ина -----
     if parts[0] == "acc":
         choice = parts[1]
+        s.setdefault("answers", {})
+        severity = int(s["answers"].get("severity", 5))
+        rf = s["answers"].get("rf", "None")
+        topic = s["answers"].get("loc", "pain")
         if choice == "yes":
-            # план принят → предложим напоминание
-            await _reply_cbsafe(q, T[lang]["remind_when"], inline_remind(lang))
-            if s.get("episode_id"):
-                episode_set(s["episode_id"], "plan_accepted", "1")
+            # создаём эпизод + мягкий follow-up
+            eid = episode_create(uid, topic, severity, rf)
+            # по умолчанию — вечерний чек-ин
+            next_dt = _parse_eve_morn_to_utc(uid, "evening")
+            episode_set(eid, "next_checkin_at", iso(next_dt))
+            await _reply_cbsafe(q, T[lang]["thanks"], inline_remind(lang))
             return
         if choice == "later":
-            await _reply_cbsafe(q, T[lang]["thanks"], inline_main_menu(lang))
+            await _reply_cbsafe(q, T[lang]["remind_when"], inline_remind(lang))
             return
         if choice == "no":
             await _reply_cbsafe(q, T[lang]["thanks"], inline_actions(lang))
             return
 
-    # ----- Quick reminders -----
+    # ----- Быстрые напоминания (из меню/после плана) -----
     if parts[0] == "rem":
-        when = parts[1]  # "4h" | "evening" | "morning"
-        when_utc = utcnow() + timedelta(hours=4) if when == "4h" else _parse_eve_morn_to_utc(uid, when)
-        text = {
-            "en": "How are you feeling now?",
-            "ru": "Как самочувствие сейчас?",
-            "uk": "Як самопочуття зараз?",
-            "es": "¿Cómo te sientes ahora?",
-        }[lang]
-        rid = reminder_add(uid, text, when_utc)
-        _schedule_oneoff(context, uid, when_utc, rid)
-        if s.get("episode_id"):
-            episode_set(s["episode_id"], "next_checkin_at", iso(when_utc))
-        await _reply_cbsafe(q, T[lang]["thanks"], inline_main_menu(lang))
+        when = parts[1]  # 4h | evening | morning
+        if when == "4h":
+            dt_utc = utcnow() + timedelta(hours=4)
+        else:
+            dt_utc = _parse_eve_morn_to_utc(uid, when)
+        rid = reminder_add(uid, T[lang]["thanks"], dt_utc)
+        _schedule_oneoff(context, uid, dt_utc, rid)
+        await _reply_cbsafe(q, T[lang]["thanks"], inline_actions(lang))
         return
 
-    # ----- Actions row -----
+    # ----- Действия (кнопки под ответом) -----
     if parts[0] == "act":
-        sub = parts[1]
-        if sub == "rem":
-            when = parts[2]
-            when_utc = utcnow() + timedelta(hours=4) if when == "4h" else _parse_eve_morn_to_utc(uid, when)
-            rid = reminder_add(uid, {"en":"Quick check-in","ru":"Короткий чек-ин","uk":"Короткий чек-ін","es":"Chequeo rápido"}[lang], when_utc)
-            _schedule_oneoff(context, uid, when_utc, rid)
-            if s.get("episode_id"):
-                episode_set(s["episode_id"], "next_checkin_at", iso(when_utc))
-            await _reply_cbsafe(q, T[lang]["thanks"], inline_main_menu(lang))
+        domain = parts[1]
+        if domain == "rem":
+            when = parts[2]  # 4h/evening/morning
+            if when == "4h":
+                dt_utc = utcnow() + timedelta(hours=4)
+            else:
+                dt_utc = _parse_eve_morn_to_utc(uid, when)
+            rid = reminder_add(uid, T[lang]["thanks"], dt_utc)
+            _schedule_oneoff(context, uid, dt_utc, rid)
+            await _reply_cbsafe(q, T[lang]["thanks"])
             return
-        if sub == "h60":
+        if domain == "h60":
             sessions[uid]["awaiting_h60"] = True
             await _reply_cbsafe(q, T[lang]["h60_intro"])
             return
-        if sub == "ex" and parts[2] == "neck":
+        if domain == "ex" and parts[2] == "neck":
             await _reply_cbsafe(q, microplan_text("neck", lang), inline_actions(lang))
             return
-        if sub == "lab":
+        if domain == "lab":
             sessions[uid]["awaiting_city"] = True
             await _reply_cbsafe(q, T[lang]["act_city_prompt"])
             return
-        if sub == "er":
-            await _reply_cbsafe(q, T[lang]["er_text"], inline_actions(lang))
+        if domain == "er":
+            await _reply_cbsafe(q, T[lang]["er_text"])
             return
 
-    # ----- Smart check-in -----
-    if parts[0] == "smart":
-        kind = parts[1]
-        if kind == "ok":
-            await _reply_cbsafe(q, {
-                "en":"👍 Got it. Ping me if anything changes.",
-                "ru":"👍 Понял. Напишите, если что-то изменится.",
-                "uk":"👍 Добре. Дайте знати, якщо щось зміниться.",
-                "es":"👍 Entendido. Avísame si cambia algo."
-            }[lang], inline_main_menu(lang))
-            return
-        if kind in {"pain", "hb", "tired", "stress", "other"}:
-            if kind == "hb":
-                txt = chip_text("hb", "triggers", lang) + "\n\n" + microplan_text("heartburn", lang)
-            elif kind == "pain":
-                txt = T[lang]["triage_pain_q1"]
-            elif kind == "tired":
-                txt = {
-                    "en": "Try a 10-min brisk walk and 300–500 ml water. Want a mini plan?",
-                    "ru": "Попробуйте 10-мин прогулку и 300–500 мл воды. Нужен мини-план?",
-                    "uk": "Спробуйте 10 хв швидкої ходьби і 300–500 мл води. Потрібен міні-план?",
-                    "es": "Prueba 10 min de caminata y 300–500 ml de agua. ¿Te doy mini plan?"
-                }[lang]
-            elif kind == "stress":
-                txt = {
-                    "en": "Box breathing 4-4-4-4 ×3; short walk; screen detox 15m.",
-                    "ru": "Дыхание 4-4-4-4 ×3; короткая прогулка; 15 мин без экрана.",
-                    "uk": "Дихання 4-4-4-4 ×3; коротка прогулянка; 15 хв без екранів.",
-                    "es": "Respiración 4-4-4-4 ×3; paseo corto; 15 min sin pantalla."
-                }[lang]
-            else:
-                txt = T[lang]["unknown"]
-            await _reply_cbsafe(q, txt, inline_actions(lang))
-            return
-
-    # ----- Context chips -----
-    if parts[0] == "chip":
-        domain, kind = parts[1], parts[2]
-        await _reply_cbsafe(q, chip_text(domain, kind, lang), inline_actions(lang))
-        return
-
-    # ----- Habits quick-log -----
-    if parts[0] == "hab":
-        which = parts[1]
-        if which == "water":
-            streak = habits_add(uid, "water", "1", "glass")
-            await _reply_cbsafe(q, {
-                "en": f"Logged water. Streak: {streak}",
-                "ru": f"Воду записал. Стикинг: {streak}",
-                "uk": f"Воду зафіксовано. Стрік: {streak}",
-                "es": f"Agua registrada. Racha: {streak}"
-            }[lang], inline_remind(lang))
-            return
-        if which == "steps":
-            streak = habits_add(uid, "steps", "1", "done")
-            await _reply_cbsafe(q, {
-                "en": f"Steps logged. Streak: {streak}",
-                "ru": f"Шаги записаны. Стик: {streak}",
-                "uk": f"Кроки записано. Стрік: {streak}",
-                "es": f"Pasos registrados. Racha: {streak}"
-            }[lang], inline_actions(lang))
-            return
-        if which == "sleep":
-            streak = habits_add(uid, "sleep", "1", "good")
-            await _reply_cbsafe(q, {
-                "en": f"Sleep logged. Streak: {streak}",
-                "ru": f"Сон записан. Стик: {streak}",
-                "uk": f"Сон зафіксовано. Стрік: {streak}",
-                "es": f"Sueño registrado. Racha: {streak}"
-            }[lang], inline_actions(lang))
-            return
-        if which == "stress":
-            streak = habits_add(uid, "stress", "1", "relief")
-            await _reply_cbsafe(q, {
-                "en": f"Stress-relief logged. Streak: {streak}",
-                "ru": f"Антистресс отмечен. Стик: {streak}",
-                "uk": f"Антистрес відмічено. Стрік: {streak}",
-                "es": f"Estrés gestionado. Racha: {streak}"
-            }[lang], inline_actions(lang))
-            return
-        if which == "weight":
-            s["awaiting_weight"] = True
-            await _reply_cbsafe(q, {
-                "en": "Send your weight in kg (e.g., 72.5).",
-                "ru": "Пришлите вес в кг (например, 72.5).",
-                "uk": "Надішліть вагу в кг (напр., 72.5).",
-                "es": "Envía tu peso en kg (ej., 72.5)."
-            }[lang])
-            return
-
-    # ----- Mood quick capture -----
+    # ----- Настроение (утро/вечер) -----
     if parts[0] == "mood":
-        choice = parts[1]
-        if choice in {"good", "ok", "bad"}:
-            daily_add(iso(utcnow()), uid, choice, "")
-            await _reply_cbsafe(q, T[lang]["mood_thanks"], inline_main_menu(lang))
+        mood_val = parts[1]
+        if mood_val in {"good", "ok", "bad"}:
+            daily_add(iso(utcnow()), uid, mood_val, "")
+            await _reply_cbsafe(q, T[lang]["mood_thanks"])
             return
-        if choice == "note":
+        if mood_val == "note":
             sessions[uid]["awaiting_daily_comment"] = True
+            await _reply_cbsafe(q, T[lang]["mood_note"])
+            return
+
+    # ----- Feedback мягкий -----
+    if parts[0] == "fb":
+        action = parts[1]
+        ts = iso(utcnow())
+        if action == "up":
+            feedback_add(ts, uid, "inline", q.from_user.username, "up", "")
+            await _reply_cbsafe(q, T[lang]["fb_thanks"])
+            return
+        if action == "down":
+            feedback_add(ts, uid, "inline", q.from_user.username, "down", "")
+            await _reply_cbsafe(q, T[lang]["fb_thanks"])
+            return
+        if action == "text":
+            sessions[uid]["awaiting_free_feedback"] = True
             await _reply_cbsafe(q, T[lang]["fb_write"])
             return
 
-    # Fallback
+    # ----- Чипы по контексту (heartburn/neck) -----
+    if parts[0] == "chip":
+        domain, kind = parts[1], parts[2]
+        txt = chip_text(domain, kind, lang)
+        await _reply_cbsafe(q, txt if txt else T[lang]["unknown"], inline_actions(lang))
+        return
+
+    # ----- Smart check-in -----
+    if parts[0] == "smart":
+        key = parts[1]
+        if key == "ok":
+            await _reply_cbsafe(q, "👍" if lang != "en" else "👍", inline_actions(lang))
+            return
+        if key == "pain":
+            s["topic"] = "pain"; s["step"] = 1; s["answers"] = {}
+            await _reply_cbsafe(q, T[lang]["triage_pain_q1"], _kb_for_code(lang, "painloc"))
+            return
+        if key == "tired":
+            await _reply_cbsafe(q, "Попробуйте 10-мин прогулку и стакан воды." if lang != "en" else "Try a 10-minute walk and a glass of water.", inline_actions(lang))
+            return
+        if key == "stress":
+            await _reply_cbsafe(q, "Сделайте 3 глубоких вдоха 4-4-6, а затем 2-мин прогулка." if lang != "en" else "Take 3 deep breaths 4-4-6, then a 2-min walk.", inline_actions(lang))
+            return
+        if key == "hb":
+            await _reply_cbsafe(q, chip_text("hb", "triggers", lang), inline_actions(lang))
+            return
+        if key == "other":
+            await _reply_cbsafe(q, T[lang]["unknown"], inline_actions(lang))
+            return
+
+    # Фолбэк — показать меню
     await _reply_cbsafe(q, T[lang]["m_menu_title"], inline_main_menu(lang))
 
 
-# ===== Wire the main callback into the app and run =====
-
-def build_app_with_callbacks() -> "Application":
-    app = build_app()
-    # основной callback-роутер
+# ---------- Регистрация колбэков и запуск ----------
+def _attach_callbacks(app):
+    # основной роутер колбэков
     app.add_handler(CallbackQueryHandler(on_callback))
-    # восстановление расписаний при старте
+
+def _ensure_token():
+    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN.strip() == "":
+        raise RuntimeError("TELEGRAM_TOKEN is missing. Set it in environment or .env")
+
+def main():
+    _ensure_token()
+    app = build_app()
+    _attach_callbacks(app)
     try:
+        # восстановить одноразовые и эпизодические напоминания
         schedule_from_sheet_on_start(app)
     except Exception as e:
-        logging.warning(f"Scheduling restore failed: {e}")
-    return app
+        logging.warning(f"schedule restore failed: {e}")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    try:
-        application = build_app_with_callbacks()
-        application.run_polling()
-    except KeyboardInterrupt:
-        logging.info("Shutting down gracefully…")
+    main()
