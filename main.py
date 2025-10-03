@@ -2619,7 +2619,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 # ---------- (8) Расширяем build_app: регистрируем /name, префикс-хэндлер и общий callback ----------
-_build_app_base = build_app
 
 def build_app():
     app = _build_app_base()
